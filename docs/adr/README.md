@@ -25,3 +25,8 @@ This directory contains the Architecture Decision Records (ADRs) for the openapi
 | [017](017-response-handling-errors.md) | Response Handling and Error Types | Accepted |
 | [018](018-security-schemes.md) | Security Schemes and Authentication | Accepted |
 | [019](019-generated-code-layout.md) | Generated Code Package Layout | Accepted |
+| [020](020-spec-ingestion-ref-resolution.md) | Spec Ingestion and $ref Resolution | Accepted |
+| [021](021-version-compatibility.md) | Runtime/Generator Version Compatibility | Accepted |
+| [022](022-atomic-generation.md) | Atomic Generation and Failure Recovery | Accepted |
+| [023](023-testing-strategy.md) | Testing and Verification Strategy | Accepted |
+| [024](024-concurrency-safety.md) | Concurrency Safety Contract | Accepted |
