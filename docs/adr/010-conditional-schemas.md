@@ -147,7 +147,7 @@ func (v *Account) UnmarshalJSON(data []byte) error {
 
 ### Chained if/then/else (Multiple Conditions)
 
-When `else` contains another `if/then/else` (chained conditions), each branch with a const/enum test becomes a variant in the oneOf, **provided every `if` node in the chain independently satisfies the detection criteria** (including `required: [prop]` on the discriminator property and a closed enum on the discriminator):
+When `else` contains another `if/then/else` (chained conditions), each branch with a const/enum test becomes a variant in the oneOf, **provided** all of the following hold: (1) every `if` node in the chain independently satisfies the detection criteria, (2) **all `if` nodes test the same discriminator property** (e.g., all check `type`), and (3) the discriminator property has a closed enum covering all branches (including the final `else`). If any `if` node tests a different property, the chain cannot be normalized to a single-discriminator oneOf and falls back to "Complex if/then/else → Validate() Only":
 
 ```yaml
 required: [type]
@@ -175,7 +175,18 @@ Normalizes to a three-variant oneOf. **Required propagation**: Each variant inhe
 When the `if` condition is not a simple const/enum check on a single property, we cannot normalize to oneOf. Instead, we generate:
 
 1. A **superset struct** containing all properties from `then` and `else` branches (all as optional)
-2. A **`Validate()` method** that implements the conditional logic
+2. A **`rawFieldKeys` field** (when any `if` condition uses `required` to check property presence, since `*T` conflates absent and null per ADR-004)
+3. A **`Validate()` method** that implements the conditional logic
+
+**Type-varying properties**: When the same property name has **different types** across branches (e.g., `value` is `string` in `then` but `integer` in `else`), a single Go struct field cannot represent both types. The generator handles this by:
+- Using `json.RawMessage` as the field type for the conflicting property
+- Generating typed accessor methods for each branch's type: `ValueAsString() (string, error)`, `ValueAsInt() (int64, error)`
+- `Validate()` checks that the raw value matches the branch-appropriate type based on the discriminator/condition
+- A generation-time warning is emitted: `WARN: property "value" has different types across if/then/else branches (string, integer). Using json.RawMessage with typed accessors.`
+
+This preserves round-trip fidelity (the raw JSON is kept) while providing type-safe access per branch.
+
+**Important**: When `if` contains `required: [x]`, the condition is "property `x` is present in the JSON" (not "property `x` is non-nil in Go"). Since `*T` conflates absent and null, `Validate()` must use `rawFieldKeys` to evaluate `if.required` conditions correctly. The generator produces `rawFieldKeys` tracking for any struct with complex if/then/else where `if` uses `required`.
 
 ```yaml
 # Complex condition: if minimum age, then require guardian
@@ -190,11 +201,15 @@ then:
 type Registration struct {
     Age          int     `json:"age"`
     GuardianName *string `json:"guardian_name,omitzero"`
+    rawFieldKeys []string // populated by UnmarshalJSON for if/required conditions
 }
 
 func (v Registration) Validate() error {
     // if age <= 17, then guardian_name is required
-    if v.Age <= 17 && v.GuardianName == nil {
+    // Note: age is a value type (required), so nil-check is not needed.
+    // For if-conditions that use `required: [prop]`, we use rawFieldKeys:
+    //   if hasRawKey(v.rawFieldKeys, "prop") { ... }
+    if v.Age <= 17 && !hasRawKey(v.rawFieldKeys, "guardian_name") {
         return &ConditionalRequiredError{
             Condition: "age <= 17",
             Missing:   []string{"guardian_name"},
@@ -262,7 +277,9 @@ func (v Payment) Validate() error {
 
 ### dependentSchemas → Validate() + Superset Struct
 
-`dependentSchemas` adds properties and constraints conditionally. We include all possible properties in the struct (optional) and validate dependencies:
+`dependentSchemas` applies an **entire additional schema** when a trigger property is present. This is more general than `dependentRequired` — the dependent schema can add properties, impose type constraints, define patterns, set additionalProperties restrictions, or any other schema constraint.
+
+We include all possible properties from all dependent schemas in the struct (as optional fields) and validate the full dependent schema constraints in `Validate()`. The generator processes each dependent schema's constraints (required, type, pattern, minLength, minimum, additionalProperties, etc.) and emits corresponding checks gated by the trigger property's presence. For constraints that cannot be expressed as simple field checks (e.g., `additionalProperties: false` on the dependent schema), the validation uses `rawFieldKeys` to evaluate the full constraint:
 
 ```yaml
 type: object

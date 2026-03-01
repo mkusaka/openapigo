@@ -74,6 +74,12 @@ type PetWithBreed struct {
 
 **`required` propagation**: The union of all `required` arrays across the allOf schemas determines which fields are non-pointer (required) in the generated struct. **Note**: In JSON Schema 2020-12, `required` is an object assertion — it only applies when the instance is an object. Non-object instances trivially pass `required`. The generator assumes that schemas processed via allOf property merging are object schemas (they have `properties`), which is the standard pattern in OpenAPI. Schemas without `type: object` but with `properties` are treated as objects for code generation purposes.
 
+**Scope limitation**: The allOf merge strategy handles `properties`, `required`, and simple constraints (format, min/max, etc.). When allOf branches include `additionalProperties`, `patternProperties`, or other structural keywords that interact across branches, the combined semantics can be complex. The generator handles specific cases:
+
+- **One branch has `additionalProperties: false`**: The known-field set is the union of all branches' declared properties, applied only to that branch's validation (see ADR-006). This is the standard OpenAPI composition pattern (base schema + extension).
+- **Multiple branches have `additionalProperties: false` with non-overlapping properties**: This is pathological — per strict JSON Schema, `allOf: [{properties:{a}, additionalProperties:false}, {properties:{b}, additionalProperties:false}]` only admits `{}`. The generator emits a **generation-time error** because no Go struct can faithfully represent this.
+- **Other conflicting structural keywords** (e.g., conflicting `patternProperties` across branches): the generator emits a **generation-time error** rather than silently producing incorrect code.
+
 ### oneOf → Wrapper Struct with Exactly-One Validation
 
 A `oneOf` value validates against exactly one schema. We generate a wrapper struct with one pointer field per variant and a `UnmarshalJSON` that enforces the exactly-one constraint.
@@ -138,6 +144,13 @@ func (v CatOrDogOneOf) MarshalJSON() ([]byte, error) {
 // Convenience
 func (v CatOrDogOneOf) IsCat() bool { return v.Cat != nil }
 func (v CatOrDogOneOf) IsDog() bool { return v.Dog != nil }
+
+// Null variant handling: When a composition includes `type: "null"` as a
+// variant (e.g., `oneOf: [Cat, {type: "null"}]`), this is the nullable
+// pattern. The generator does NOT add a separate `Null *struct{}` variant.
+// Instead, the entire composition type is wrapped in Nullable[T] (per ADR-004):
+//   type NullableCat = Nullable[Cat]
+// This avoids the ambiguity of nil meaning both "no variant" and "null variant".
 
 // Constructors
 // Go 1.26+: uses new(expr) for ergonomic pointer construction
@@ -272,13 +285,17 @@ If the composition appears inside a named schema (e.g., `components/schemas/Pet`
 For anyOf marshaling when multiple variants are set, `marshalMerge` performs a **JSON object merge**:
 
 1. Marshal each non-nil variant to JSON
-2. If **all** marshaled values are JSON objects (`{...}`): merge into a single `map[string]json.RawMessage`. For conflicting keys, the value from the **first** non-nil variant takes precedence.
+2. If **all** marshaled values are JSON objects (`{...}`): merge into a single `map[string]json.RawMessage`. For conflicting keys (same key, different values per JSON semantic equality), `marshalMerge` returns an error (`ErrAnyOfConflictingKeys`). When values are identical (same key, same value), the key is included once. This ensures `MarshalJSON` never silently produces a payload that conflicts with the input variants. Note: when constructed via `UnmarshalJSON` (from the same JSON input), all variants' shared keys always have identical values, so conflicts only occur when users manually set different values on different variants.
 3. If **any** marshaled value is NOT a JSON object (e.g., a string, number, array, or null): merging is not possible. All non-nil variants' JSON must be **semantically identical** (JSON-value equality, not byte equality); if they differ, `marshalMerge` returns an error (`ErrAnyOfConflictingValues`). If they are semantically identical, `marshalMerge` returns the first variant's marshaled JSON (since all are equivalent). Semantic comparison normalizes values by unmarshaling each variant's JSON via `json.NewDecoder` with `UseNumber()` into `any`, then comparing with a custom `jsonEqual` function that performs **mathematical numeric comparison** (parsing `json.Number` values via `new(big.Rat).SetString()` and comparing with `Rat.Cmp`). This handles differences in numeric representation (`1` vs `1.0` vs `1e0`), key ordering, and whitespace that byte-level comparison would incorrectly flag as mismatches. Using `UseNumber` preserves integer precision beyond float64's 53-bit mantissa (e.g., `9007199254740993` vs `9007199254740992` are correctly distinguished), and `big.Rat` comparison provides exact arithmetic for all JSON-representable numbers. Note that custom `MarshalJSON` implementations may produce different byte output even from the same input data, which is another reason byte comparison is insufficient. When constructed via `UnmarshalJSON` (from the same input), semantic identity is always satisfied because all variants were unmarshaled from the same JSON value. Divergence can occur when users manually set different values on multiple variants. A generation-time warning is emitted when anyOf mixes object and non-object schemas.
 4. Marshal the merged map
 
-**Limitation**: Object merge can produce JSON that does not match any individual variant's schema. For example, if Cat has `{"name": "Fluffy", "whiskers": true}` and Dog has `{"name": "Buddy", "breed": "lab"}`, merging produces `{"name": "Fluffy", "whiskers": true, "breed": "lab"}` which may match neither Cat nor Dog's validation rules. This is inherent to the anyOf-with-multiple-matches design. `MarshalJSON` does **not** validate the merged output against variant schemas — doing so would require running schema validation during every marshal call, which is prohibitively expensive.
+**Limitation — marshalMerge may produce schema-invalid JSON**: Object merge can produce JSON that matches no individual variant's schema. For example, if Cat has `{"name": "Fluffy", "whiskers": true}` and Dog has `{"name": "Fluffy", "breed": "lab"}` (same `name` — no conflict), merging produces `{"name": "Fluffy", "whiskers": true, "breed": "lab"}` which may match neither Cat nor Dog's validation rules due to extra fields. If conflicting keys are detected (different values for the same key), `MarshalJSON` returns an error.
 
-**Recommendation**: For anyOf types where multiple variants are set, users should call `Validate()` after construction to verify the merged output still satisfies at least one schema. We emit a generation-time warning when anyOf variants have overlapping properties with different semantics.
+**Why MarshalJSON does not validate the merged output**: Validating against variant schemas inside `MarshalJSON` would require embedding schema validation logic (property sets, constraints, additionalProperties rules) into every anyOf type's marshal method — essentially duplicating `Validate()` inside `MarshalJSON`. This violates the project's principle of opt-in validation (ADR-013) and adds significant code and runtime cost to every marshal call. Instead, the responsibility is on the caller: **always call `Validate()` before marshaling** when multiple anyOf variants are set. The `Validate()` method checks that the combined state satisfies at least one variant schema. This is the same pattern used throughout the project: `MarshalJSON`/`UnmarshalJSON` handle serialization; `Validate()` handles schema compliance.
+
+**Recommendation**: For anyOf types where multiple variants are set, users should call `Validate()` before marshaling to verify the combined state satisfies at least one schema. We emit a generation-time warning when anyOf variants have overlapping properties with different semantics.
+
+**Design decision**: We explicitly chose NOT to embed schema validation inside `MarshalJSON`, accepting that `MarshalJSON` success does not guarantee schema validity for multi-variant anyOf. The alternative (validation in marshal) was rejected because: (1) it violates the opt-in validation principle (ADR-001, ADR-013); (2) it duplicates `Validate()` logic in every anyOf marshal method; (3) Go's standard library types (`time.Time`, `net.IP`, etc.) similarly allow `MarshalJSON` to succeed with logically invalid values. This trade-off is inherent to representing anyOf multi-match in Go and applies to all existing Go OpenAPI generators that support anyOf.
 
 ## Consequences
 

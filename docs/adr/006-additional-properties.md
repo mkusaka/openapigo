@@ -48,7 +48,29 @@ additionalProperties:
 ```
 
 ```go
+// No constraints → type alias (no methods needed)
 type Labels = map[string]string
+```
+
+When the schema has constraints (`minProperties`, `maxProperties`, value-level constraints like `pattern`, etc.), the generator uses a **defined type** instead of a type alias, enabling `Validate()` method attachment:
+
+```yaml
+type: object
+additionalProperties:
+  type: string
+minProperties: 1
+maxProperties: 10
+```
+
+```go
+// Has constraints → defined type (can attach Validate())
+type Labels map[string]string
+
+func (l Labels) Validate() error {
+    if len(l) < 1 { return &MinPropertiesError{Min: 1, Actual: len(l)} }
+    if len(l) > 10 { return &MaxPropertiesError{Max: 10, Actual: len(l)} }
+    return nil
+}
 ```
 
 ```yaml
@@ -69,6 +91,8 @@ additionalProperties: true
 ```go
 type FreeFormObject = map[string]any
 ```
+
+**Type alias vs defined type rule**: The generator uses a type alias (`type X = map[...]`) when the schema has no constraints that require validation. When any constraint exists (`minProperties`, `maxProperties`, value-schema constraints, etc.), it generates a defined type (`type X map[...]`) so that `Validate()` can be attached. This ensures `Validate()` is always available when the schema has constraints.
 
 ### Case 2: Strict Object (`additionalProperties: false`)
 
@@ -92,6 +116,8 @@ type Person struct {
 ```
 
 A custom `UnmarshalJSON` tracks raw field keys, and `Validate()` uses them to reject unknown fields (see ADR-012 for the pattern). When `--skip-validation` is specified, neither `rawFieldKeys` tracking nor `Validate()` is generated, and the struct is a plain struct with no additional fields.
+
+**Known limitation (case-variant keys in strict objects)**: `encoding/json` v1 matches JSON keys to struct fields using case-folding (`bytes.EqualFold`), not case-sensitive comparison. This means `{"NAME": "x"}` is matched to a struct field tagged `json:"name"` — the key is treated as a known field, not an additional property. For `additionalProperties: false`, `Validate()` uses the same case-fold matching to classify keys. As a result, case-variant keys (e.g., `NAME` vs `name`) are **not** rejected as unknown. This deviates from JSON Schema's case-sensitive property matching. We accept this tradeoff because: (a) rejecting case-variants that `encoding/json` successfully decoded would create an inconsistency between the decoded struct state and the validation result, (b) case-variant property names are extremely rare in real-world APIs, (c) `encoding/json/v2` resolves this by using case-sensitive matching by default. The generated documentation warns about this limitation.
 
 ### Case 3: Object with Typed additionalProperties
 
@@ -231,9 +257,11 @@ type Person struct {
 
 Per the JSON Schema specification, when `additionalProperties` is not specified, additional properties are **allowed** (equivalent to `additionalProperties: true`).
 
-However, in practice, most Go API consumers do not need to access unknown fields. We take a **pragmatic default**:
+**Important**: When a schema is `type: object` with **no `properties`** (or empty `properties`) and **no `additionalProperties`**, it is a **free-form object** — equivalent to `additionalProperties: true` with no named fields. This always generates `map[string]any` (same as Case 1 with `additionalProperties: true`), regardless of the `--additional-properties` flag. The flag only affects schemas that have **both** `properties` and absent `additionalProperties` — i.e., Case 5 below.
 
-- When `additionalProperties` is **absent**: generate a plain struct with no `rawFieldKeys` tracking or custom `UnmarshalJSON`. Unlike `additionalProperties: false` (which generates `rawFieldKeys` + `Validate()` for unknown-field detection), the absent case produces a minimal struct. The standard `encoding/json` decoder silently ignores unknown fields anyway.
+For schemas with `properties` and absent `additionalProperties`, in practice most Go API consumers do not need to access unknown fields. We take a **pragmatic default**:
+
+- When `additionalProperties` is **absent** and `properties` is present: generate a plain struct with no `rawFieldKeys` tracking or custom `UnmarshalJSON`. Unlike `additionalProperties: false` (which generates `rawFieldKeys` + `Validate()` for unknown-field detection), the absent case produces a minimal struct. The standard `encoding/json` decoder silently ignores unknown fields anyway.
 - When `additionalProperties` is **explicitly `true`**: generate the struct with `AdditionalProperties map[string]any` (Case 4).
 
 This avoids generating custom marshal/unmarshal for the majority of schemas where `additionalProperties` is simply unspecified and not intentionally used.
@@ -250,6 +278,8 @@ CLI flags for controlling this behavior:
 | `--additional-properties=ignore` | (Default) Absent → plain struct, no extra fields captured |
 | `--additional-properties=preserve` | Absent → `AdditionalProperties map[string]json.RawMessage` to preserve unknown fields during round-trips |
 | `--additional-properties=strict` | Absent → `true`, full map generation for all types without explicit `additionalProperties: false` |
+
+**Scope of `--additional-properties` flag**: This flag applies **only** to Case 5 — schemas with `properties` and absent `additionalProperties`. It does NOT affect: (a) schemas with no `properties` (free-form objects → always `map[string]any`), (b) schemas with explicit `additionalProperties: false/true/{schema}` (Cases 1-4, 6), (c) `patternProperties`-only schemas (ADR-011 — these use their own type generation rules independent of this flag). Specifically, ADR-011's `map[string]json.RawMessage` for multi-pattern schemas is determined by the `patternProperties` structure, not by this flag.
 
 ### Case 6: `additionalProperties` as a Complex Schema
 

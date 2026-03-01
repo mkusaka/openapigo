@@ -73,20 +73,84 @@ We adopt **Endpoint objects** as the core API pattern. This is the closest Go eq
 ```go
 // Endpoint defines a typed API operation.
 // Req is the request type (params + body), Resp is the success response type.
+// All fields are unexported to prevent mutation of package-level Endpoint variables
+// (which would cause data races in concurrent use and unexpected behavior).
 type Endpoint[Req, Resp any] struct {
-    Method       string
-    Path         string         // OpenAPI path template, e.g. "/pets/{petId}"
-    errorParsers []ErrorHandler // registered via WithErrors(); unexported to prevent direct mutation
+    method         string
+    path           string           // OpenAPI path template, e.g. "/pets/{petId}"
+    successCodes   []int            // status codes treated as success (default: 200-299)
+    successParser  func(resp *http.Response) (*Resp, error) // parses success response body
+    errorParsers   []ErrorHandler   // registered via WithErrors(); unexported to prevent direct mutation
+}
+
+// Method returns the HTTP method.
+func (e Endpoint[Req, Resp]) Method() string { return e.method }
+
+// Path returns the OpenAPI path template.
+func (e Endpoint[Req, Resp]) Path() string { return e.path }
+
+// isSuccessStatus returns true if the status code is a success status for this endpoint.
+// When successCodes is explicitly set (via WithSuccessCodes or generated code), ONLY those
+// codes are treated as success — this enables ADR-017's "undefined 2xx → UnexpectedStatusError"
+// behavior. When successCodes is empty (default), all 2xx codes are treated as success.
+// Generated endpoints always call WithSuccessCodes with the specific codes from the OpenAPI
+// spec (e.g., WithSuccessCodes(200) or WithSuccessCodes(200, 201)), so undefined 2xx status
+// codes fall through to error handling. When the spec defines a 2XX range response, the
+// generator leaves successCodes empty (all 2xx are success).
+func (e Endpoint[Req, Resp]) isSuccessStatus(code int) bool {
+    if len(e.successCodes) > 0 {
+        for _, c := range e.successCodes {
+            if c == code {
+                return true
+            }
+        }
+        return false
+    }
+    return code >= 200 && code < 300
 }
 
 // ErrorHandler maps an HTTP status code (or range) to a response parser.
 // Matching priority: exact Status → StatusRange (3XX/4XX/5XX) → Default.
-// See ADR-017 for full response handling details including 3XX redirect responses.
+// See ADR-017 for full response handling details.
+//
+// 3xx caveat: Go's http.Client automatically follows redirects
+// (301/302/303/307/308) by default, so most 3xx codes never reach
+// this handler unless Do() overrides CheckRedirect. When the OpenAPI
+// spec defines a 3xx response, Do() sets a per-request CheckRedirect
+// that returns http.ErrUseLastResponse for those specific codes,
+// allowing them to reach the handler (see ADR-017). StatusRange "3XX"
+// is supported and matches any 3xx code that reaches the handler.
 type ErrorHandler struct {
     Status      int                            // exact status code (e.g., 404)
     StatusRange string                         // status range: "3XX", "4XX", "5XX"
     Default     bool                           // catch-all for unmatched status codes
     Parse       func(resp *http.Response) error // parses response body into typed error
+}
+
+// NewEndpoint creates an Endpoint with the given method and path.
+// This is the only way to construct an Endpoint — struct literal initialization
+// is not possible because all fields are unexported.
+func NewEndpoint[Req, Resp any](method, path string) Endpoint[Req, Resp] {
+    return Endpoint[Req, Resp]{method: method, path: path}
+}
+
+// WithSuccessCodes returns a copy of the Endpoint with the given success status codes.
+// When set, ONLY these codes are treated as success (overriding the default "all 2xx" behavior).
+// Generated code always calls this with the specific success codes from the OpenAPI spec.
+// Additional non-2xx success codes (e.g., 304) can also be included.
+func (e Endpoint[Req, Resp]) WithSuccessCodes(codes ...int) Endpoint[Req, Resp] {
+    combined := make([]int, len(e.successCodes)+len(codes))
+    copy(combined, e.successCodes)
+    copy(combined[len(e.successCodes):], codes)
+    e.successCodes = combined
+    return e
+}
+
+// WithSuccessParser returns a copy of the Endpoint with a custom success response parser.
+// This enables status-code-specific response parsing (e.g., different schemas for 200 vs 201).
+func (e Endpoint[Req, Resp]) WithSuccessParser(parser func(resp *http.Response) (*Resp, error)) Endpoint[Req, Resp] {
+    e.successParser = parser
+    return e
 }
 
 // WithErrors returns a copy of the Endpoint with error handlers appended.
@@ -161,13 +225,12 @@ paths:
 // ===== Generated: endpoints.go =====
 
 // GetPet retrieves a pet by ID.
-var GetPet = openapigo.Endpoint[GetPetRequest, Pet]{
-    Method: "GET",
-    Path:   "/pets/{petId}",
-}.WithErrors(
-    // Error parsers registered per status code (see ADR-017 for error type details)
-    openapigo.ErrorHandler{Status: 404, Parse: parseGetPet404Error},
-)
+var GetPet = openapigo.NewEndpoint[GetPetRequest, Pet]("GET", "/pets/{petId}").
+    WithSuccessCodes(200).
+    WithErrors(
+        // Error parsers registered per status code (see ADR-017 for error type details)
+        openapigo.ErrorHandler{Status: 404, Parse: parseGetPet404Error},
+    )
 
 // ===== Generated: operations.go =====
 
@@ -267,10 +330,8 @@ type UpdatePetBody struct {
 When an operation has no parameters and no body, the request type is `openapigo.NoRequest`:
 
 ```go
-var ListPets = openapigo.Endpoint[openapigo.NoRequest, ListPetsResponse]{
-    Method: "GET",
-    Path:   "/pets",
-}
+var ListPets = openapigo.NewEndpoint[openapigo.NoRequest, ListPetsResponse]("GET", "/pets").
+    WithSuccessCodes(200)
 
 // Usage: no request argument needed
 pets, err := openapigo.Do(ctx, client, api.ListPets, openapigo.NoRequest{})
@@ -419,4 +480,4 @@ But this is opt-in, not the default.
 
 - Go's type inference for generic functions has edge cases. If the compiler cannot infer types (e.g., when `NoRequest` is used with an interface), explicit type arguments may be needed. We test against all Go 1.24+ compilers.
 - The struct tag approach for parameter serialization adds runtime reflection overhead. This is amortized by caching struct metadata per type (computed once via `sync.Once`).
-- **DoStream and error responses**: `DoStream` (ADR-017) checks the initial HTTP response status code before entering the streaming loop. On non-2xx responses, the iterator yields a single `(zero, error)` pair where the error follows the same `parseError` logic as `Do()` (exact status → range → default handler). The connection is then closed. This ensures consistent error handling between `Do()` and `DoStream()`.
+- **DoStream and error responses**: `DoStream` (ADR-017) checks the initial HTTP response status code before entering the streaming loop using the same `isSuccessStatus` logic as `Do()` (checks `successCodes` if set, otherwise all 2xx). On non-success responses, the iterator yields a single `(zero, error)` pair where the error follows the same `parseError` logic as `Do()` (exact status → range → default handler). The connection is then closed. This ensures consistent error handling between `Do()` and `DoStream()`.

@@ -234,7 +234,7 @@ type Pet struct {
 
 The constructor sets it, but users can leave it nil (absent). The `Validate()` method checks the const constraint **only when the field is non-nil** (present).
 
-**Important caveat**: `*string` conflates absent and null (per ADR-004). A JSON input `{"species": null}` sets the pointer to `nil`, indistinguishable from absent. For non-nullable fields, `encoding/json` unmarshal to `*string` treats null as `nil`. This means a non-nullable `const` field cannot distinguish between "absent" (valid — field is optional) and "null" (invalid — field is non-nullable) using the pointer alone. **Null detection for non-nullable fields**: The `Validate()` method for non-nullable optional fields with `const` performs two checks: (1) a non-null check (when the schema does not allow null), and (2) the const value check. Both are combined in the same method. The non-null check uses the struct's `rawFieldKeys` (populated by `UnmarshalJSON` when any field-presence tracking is needed, per ADR-012) to distinguish "field absent" from "field present as null". When `rawFieldKeys` is available and the key is present but the pointer is `nil`, `Validate()` reports a null violation. When `rawFieldKeys` is not available (no unevaluatedProperties tracking), the absent/null conflation is accepted as a known limitation of `*T`. The const check itself only fires for non-nil (actually-present) values:
+**Important caveat**: `*string` conflates absent and null (per ADR-004). A JSON input `{"species": null}` sets the pointer to `nil`, indistinguishable from absent. For non-nullable fields, `encoding/json` unmarshal to `*string` treats null as `nil`. This means a non-nullable `const` field cannot distinguish between "absent" (valid — field is optional) and "null" (invalid — field is non-nullable) using the pointer alone. **Null detection for non-nullable fields**: The `Validate()` method for non-nullable optional fields with `const` performs two checks: (1) a non-null check (when the schema does not allow null), and (2) the const value check. Both are combined in the same method. The non-null check uses the struct's `rawFieldKeys` (populated by `UnmarshalJSON`) to distinguish "field absent" from "field present as null". When the key is present in `rawFieldKeys` but the pointer is `nil`, `Validate()` reports a null violation. Per ADR-004/ADR-012, `rawFieldKeys` is always generated for structs containing non-nullable `*T` fields when `Validate()` is generated (not `--skip-validation`), so null detection is available whenever validation is available. The const check itself only fires for non-nil (actually-present) values:
 
 ```go
 func (v Pet) Validate() error {
@@ -249,7 +249,7 @@ func (v Pet) Validate() error {
 }
 ```
 
-**Complex-type const** (object/array): Go's `const` keyword only supports primitive types. For `const` with object or array values, we generate an **unexported function** that returns the const value (using a function instead of a `var` prevents external mutation of the reference value) and enforce the constraint in `Validate()`:
+**Complex-type const** (object/array): Go's `const` keyword only supports primitive types. For `const` with object or array values, we generate an **unexported function** that returns the const value (using a function instead of a `var` prevents external mutation of the reference value) and enforce the constraint in `Validate()`. The struct also includes a `rawJSON []byte` field (populated by `UnmarshalJSON` with the full input bytes) to enable exact JSON-level comparison — without this, `encoding/json`'s silent dropping of unknown keys would cause false positives (see validation code below):
 
 ```yaml
 config:
@@ -263,23 +263,35 @@ config:
 func configConstValue() Config { return Config{Mode: "strict", Version: 2} }
 
 func (v Config) Validate() error {
-    // Deep-equality check against the const value.
-    // NOTE: reflect.DeepEqual compares Go struct fields, NOT raw JSON bytes.
-    // This means: (1) extra JSON keys that encoding/json ignores during unmarshal
-    // are NOT detected (they're silently dropped). This is a known limitation:
-    // JSON Schema const requires exact value equality including no extra keys.
-    // The generated code cannot enforce this without access to the raw JSON.
-    // For strict JSON-level const matching (rejecting extra keys), use a
-    // custom UnmarshalJSON that performs JSON-level semantic comparison (unmarshal
-    // both the input and the const value into `any`, then deep-compare — do NOT
-    // compare raw bytes, as key ordering and whitespace differences would cause
-    // false mismatches). Alternatively, validate against the raw JSON with a
-    // JSON Schema validator library. Note: combining with
-    // unevaluatedProperties: false (ADR-012) does NOT help here because
-    // const does not contribute to the set of "evaluated" properties per
-    // JSON Schema 2020-12.
-    // (2) Field comparison uses Go semantics (not JSON semantics), so NaN != NaN, etc.
-    if !reflect.DeepEqual(v, configConstValue()) {
+    // JSON-level semantic comparison for complex const.
+    // JSON Schema `const` requires exact JSON value equality, NOT Go struct equality.
+    //
+    // CRITICAL: We compare against the RAW JSON input, not the re-marshaled Go struct.
+    // encoding/json silently drops unknown keys during unmarshal into a struct, so
+    // re-marshaling the struct loses information: input {"mode":"strict","extra":1}
+    // would marshal back to {"mode":"strict"}, falsely passing the const check.
+    //
+    // The rawJSON field is populated by UnmarshalJSON (the full JSON input bytes).
+    // When the struct was constructed in Go code (not from JSON), rawJSON is nil,
+    // and we fall back to marshal-based comparison (acceptable because Go-constructed
+    // values cannot have extra keys).
+    //
+    // Comparison uses jsonEqual() (same approach as marshalMerge in ADR-002):
+    // unmarshal both into `any` via json.NewDecoder with UseNumber(), then compare
+    // with jsonEqual() which handles key ordering, whitespace, and numeric
+    // representation differences (1 vs 1.0 vs 1e0).
+    constJSON, _ := json.Marshal(configConstValue())
+    var actualJSON []byte
+    if v.rawJSON != nil {
+        actualJSON = v.rawJSON
+    } else {
+        var err error
+        actualJSON, err = json.Marshal(v)
+        if err != nil {
+            return fmt.Errorf("config: failed to marshal for const comparison: %w", err)
+        }
+    }
+    if !jsonEqual(constJSON, actualJSON) {
         return &ValidationError{
             Field: "config", Constraint: "const",
             Message: "must equal the const value",
@@ -385,6 +397,36 @@ Users who want defaults applied on unmarshal can call the constructor first and 
 params := NewListPetsParams() // defaults applied
 json.Unmarshal(data, &params) // only overrides fields present in JSON
 ```
+
+**Interaction with ADR-004 (Nullable zero-reset)**: Structs containing `Nullable[T]` fields have a generated `UnmarshalJSON` that performs `*v = MyStruct{}` (zero-reset) at the start (per ADR-004). This zero-reset wipes constructor-applied defaults before decoding. To reconcile: when a struct has **both** `Nullable[T]` fields **and** fields with `default` values, the generated `UnmarshalJSON` re-applies defaults for **absent** fields after decoding, using `rawFieldKeys` tracking to determine which fields were present in the JSON input:
+
+```go
+func (v *ListPetsParams) UnmarshalJSON(data []byte) error {
+    *v = ListPetsParams{} // zero reset (ADR-004: Nullable correctness)
+    type plain ListPetsParams
+    if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+        return err
+    }
+    var raw map[string]json.RawMessage
+    if err := json.Unmarshal(data, &raw); err != nil {
+        return err
+    }
+    v.rawFieldKeys = make([]string, 0, len(raw))
+    for key := range raw {
+        v.rawFieldKeys = append(v.rawFieldKeys, key)
+    }
+    // Re-apply defaults for absent fields (not present in JSON input)
+    if _, ok := raw["page_size"]; !ok {
+        v.PageSize = ptr(20)
+    }
+    if _, ok := raw["sort_by"]; !ok {
+        v.SortBy = ptr(ListPetsParamsSortByCreatedAt)
+    }
+    return nil
+}
+```
+
+For structs **without** `Nullable[T]` fields (no generated `UnmarshalJSON`), the constructor-then-unmarshal pattern works directly as described above. The default re-application is only generated when the zero-reset conflict exists.
 
 ### Enum Validation Strategy
 

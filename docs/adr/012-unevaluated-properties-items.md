@@ -148,9 +148,19 @@ func (v PetWithBreed) Validate() error {
     // properties in the evaluated set. This two-phase approach ensures that
     // only truly matching branches contribute evaluated properties.
 
-    // For patternProperties: any key matching a pattern regex is evaluated
+    // For patternProperties: any key matching a pattern regex is evaluated.
     // Example: if patternProperties has "^x-": {type: string},
     // then "x-custom" is evaluated even though it's not in properties.
+
+    // For additionalProperties: Per JSON Schema 2020-12 §10.3.2.3, when
+    // additionalProperties is present, it evaluates ALL keys not matched
+    // by properties or patternProperties. This means when a subschema has
+    // additionalProperties (true or {schema}), every key handled by
+    // additionalProperties is considered "evaluated" for unevaluatedProperties
+    // purposes. The evaluated set includes: (1) properties keys, (2)
+    // patternProperties-matched keys, (3) ALL remaining keys (covered by
+    // additionalProperties). In practice, if any subschema in the composition
+    // tree has additionalProperties, its covered keys join the evaluated set.
 
     for _, key := range v.rawFieldKeys {
         if !evaluated[key] {
@@ -164,7 +174,7 @@ func (v PetWithBreed) Validate() error {
 }
 ```
 
-**Note**: The `rawFieldKeys` field is generated when any of the following keywords is present: `unevaluatedProperties: false`, `additionalProperties: false` (ADR-006), or `dependentRequired` (ADR-010). These all require raw JSON key presence detection. Schemas without any of these keywords do not incur the overhead of tracking raw keys.
+**Note**: The `rawFieldKeys` field is generated when **any** of the following conditions apply: `unevaluatedProperties: false`, `additionalProperties: false` (ADR-006), `dependentRequired` (ADR-010), `dependentSchemas` (ADR-010), complex `if/then/else` where `if` uses `required` (ADR-010), or the struct contains non-nullable `*T` fields and `Validate()` is generated (ADR-004 — enables null-detection for non-nullable fields). These all require raw JSON key presence detection. Schemas without any of these conditions do not incur the overhead of tracking raw keys.
 
 ### unevaluatedProperties: {schema} → AdditionalProperties Map
 
@@ -186,7 +196,15 @@ type Named struct {
 }
 ```
 
-The `UnmarshalJSON` logic is the same as ADR-006 Case 3, but the set of "known fields" is gathered from **all subschemas in the composition tree**, not just the immediate schema.
+**Important**: The `UnmarshalJSON` logic differs from ADR-006 Case 3 in a critical way. ADR-006 Case 3 removes known keys during unmarshal and puts the rest into `AdditionalProperties` — this is safe because `additionalProperties` has a statically known set of "known" keys. For `unevaluatedProperties: {schema}`, the "evaluated" set is **dynamic** (depends on which `oneOf`/`anyOf`/`if-then-else` branch matched). Therefore, `UnmarshalJSON` must preserve **all** raw keys in a `rawFields map[string]json.RawMessage` field (not just the unevaluated ones).
+
+**Lifecycle of `AdditionalProperties` and `rawFields`**:
+- **`UnmarshalJSON`**: Populates `rawFields` with ALL raw key-value pairs from the JSON object. Does NOT populate `AdditionalProperties` yet (because the evaluated set is unknown at this stage for dynamic cases).
+- **`Validate()`**: (1) Determines the evaluated set based on matched variants (recorded during unmarshal via ADR-002/003), (2) identifies unevaluated keys (present in `rawFields` but not in the evaluated set), (3) validates each unevaluated key's value against the `unevaluatedProperties` schema, and (4) **populates `AdditionalProperties`** with validated unevaluated key-value pairs (unmarshaled from `rawFields` into the schema type). After `Validate()` succeeds, `AdditionalProperties` contains all unevaluated properties correctly typed. **Important: pointer receiver requirement** — because this `Validate()` has a side effect (populating `AdditionalProperties`), it MUST use a **pointer receiver** (`func (v *T) Validate() error`), not a value receiver. A value receiver would modify a copy, leaving the caller's `AdditionalProperties` nil. This is an exception to ADR-013's general pattern (which uses value receivers for pure validation). The generator detects schemas with `unevaluatedProperties: {schema}` and automatically switches to a pointer receiver for `Validate()` on those types.
+- **`MarshalJSON`**: Writes known struct fields first, then `AdditionalProperties` entries (if populated). If `AdditionalProperties` is nil (e.g., `Validate()` was not called), falls back to writing all `rawFields` entries not matching known field keys — this ensures round-trip fidelity even without `Validate()`.
+- **When `--skip-validation` is used**: `Validate()` is not generated, so `AdditionalProperties` is never populated via validation. `MarshalJSON` uses the `rawFields` fallback for round-trip fidelity. Users who need typed access to unevaluated properties must use the standard (non-skip) mode.
+
+For `allOf` (where all branches always apply), the evaluated set is static and can be resolved at codegen time — the generator optimizes this case to populate `AdditionalProperties` directly in `UnmarshalJSON` (same as ADR-006 Case 3's approach).
 
 ### unevaluatedItems: false → Validate() Only
 
@@ -196,7 +214,7 @@ For tuple types (prefixItems), `unevaluatedItems: false` means no elements beyon
 - `items` evaluates all items beyond prefixItems
 - `contains` evaluates items matching the contains schema
 
-When `items` is present (not just `prefixItems`), **all elements beyond `prefixItems` are evaluated by `items`**, making `unevaluatedItems: false` effectively a no-op (no elements can be "unevaluated"). The generator detects this case and omits `rawElements`/`rawLen` tracking since it would be dead code. `unevaluatedItems: false` is only meaningful when:
+When `items` is present **in the same schema object** (not in a subschema via `allOf`/`anyOf`/`if`/etc.) and applies unconditionally, all elements beyond `prefixItems` are evaluated by `items`, making `unevaluatedItems: false` effectively a no-op. The generator detects this case and omits `RawElements`/`rawLen` tracking. **Important limitation**: This optimization applies only when `items` is a **direct sibling keyword** of `unevaluatedItems` in the same schema object. When `items` appears inside a composition branch (e.g., `allOf[1].items`), JSON Schema 2020-12 requires the `items` annotation to have been produced by a **successful** evaluation. If the branch containing `items` fails validation (e.g., an `anyOf` branch that didn't match), its `items` annotation is not produced, and elements may remain unevaluated. The generator checks for this: when `items` is inside a conditional or branching applicator (`anyOf`, `oneOf`, `if/then/else`), the no-op optimization is **not** applied, and full `RawElements` tracking is generated. `unevaluatedItems: false` is only meaningful when:
 
 1. Only `prefixItems` is used (no `items`) — rejects elements beyond the tuple
 2. Only `contains` is used (no `items`) — rejects elements not matched by contains
@@ -263,18 +281,18 @@ func (t MyContainsTuple) Validate() error {
 
     // Indices evaluated by contains: check each raw element against
     // the contains schema and mark matching indices as evaluated.
-    for i, raw := range t.rawElements {
+    for i, raw := range t.RawElements {
         if matchesContainsSchema(raw) {
             evaluatedIndices[i] = true
         }
     }
 
     // Any index NOT in evaluatedIndices is unevaluated
-    for i := 0; i < len(t.rawElements); i++ {
+    for i := 0; i < len(t.RawElements); i++ {
         if !evaluatedIndices[i] {
             return &UnevaluatedItemsError{
                 UnevaluatedIndex: i,
-                TotalItems:       len(t.rawElements),
+                TotalItems:       len(t.RawElements),
             }
         }
     }
@@ -290,19 +308,19 @@ When `unevaluatedItems` specifies a schema, unevaluated elements must conform to
 type MyTuple struct {
     V0          string
     V1          int
-    rawElements []json.RawMessage // preserved for unevaluatedItems validation
+    RawElements []json.RawMessage `json:"-"` // preserved for unevaluatedItems validation; public for user access
 }
 
 func (t MyTuple) Validate() error {
     // Determine which indices were evaluated by prefixItems, items, contains
     evaluatedIndices := make(map[int]bool)
-    for i := 0; i < min(len(t.rawElements), 2); i++ {
+    for i := 0; i < min(len(t.RawElements), 2); i++ {
         evaluatedIndices[i] = true // prefixItems
     }
     // ... contains evaluation ...
 
     // Validate unevaluated elements against the schema
-    for i, raw := range t.rawElements {
+    for i, raw := range t.RawElements {
         if !evaluatedIndices[i] {
             var val bool
             if err := json.Unmarshal(raw, &val); err != nil {
@@ -331,10 +349,11 @@ type MyTuple struct {
 | `unevaluatedProperties: false` present | `rawFieldKeys` field + custom `UnmarshalJSON` + `Validate()` check |
 | `unevaluatedProperties: {schema}` present | `AdditionalProperties` map (same as ADR-006) |
 | `unevaluatedItems: false` present (no `contains`, no `items`) | `rawLen` field + `Validate()` check |
-| `unevaluatedItems: false` present (with `contains`, no `items`) | `rawElements []json.RawMessage` field + sparse index tracking in `Validate()` |
+| `unevaluatedItems: false` present (with `contains`, no `items`) | `RawElements []json.RawMessage` field (exported) + sparse index tracking in `Validate()` |
 | `unevaluatedItems: {schema}` present (no `contains`, no `items`) | `AdditionalItems` slice (same as ADR-009) |
-| `unevaluatedItems: {schema}` present (with `contains`, no `items`) | `rawElements []json.RawMessage` field + sparse index validation in `Validate()` |
-| `unevaluatedItems` present (with `items`) | No extra code — `items` evaluates all remaining elements, making `unevaluatedItems` a no-op |
+| `unevaluatedItems: {schema}` present (with `contains`, no `items`) | `RawElements []json.RawMessage` field (exported) + sparse index validation in `Validate()` |
+| `unevaluatedItems` present (with `items` as **direct sibling** keyword) | No extra code — `items` evaluates all remaining elements, making `unevaluatedItems` a no-op |
+| `unevaluatedItems` present (`items` only in composition branches, not direct sibling) | Same as without `items` — full `RawElements` tracking required (branch `items` may not evaluate all elements) |
 | None of the above | No extra code |
 
 ## Consequences
@@ -353,8 +372,7 @@ type MyTuple struct {
 
 ### Risks
 
-- `oneOf`/`anyOf` with `unevaluatedProperties: false` requires knowing which variant matched to determine the evaluated field set. The variant matched during unmarshal must be tracked. This interacts with ADR-002/003's composition type handling. **Failed branches must NOT contribute to the evaluated set** — this is a common implementation error. For `anyOf`, **all matching branches** contribute (unlike oneOf where only one matches).
-- When `unevaluatedProperties` is a **schema** (not just `false`) and the type uses `oneOf`/`anyOf`, the set of "known" (evaluated) properties depends on which branch matched at runtime. The `UnmarshalJSON` must record which variant was selected so that `Validate()` can compute the correct evaluated set dynamically.
+- `oneOf`/`anyOf` with `unevaluatedProperties` (both `false` and `{schema}`) requires knowing which variant(s) matched to determine the evaluated field set. The variant(s) matched during unmarshal must be tracked (using the composition type's non-nil pointer fields per ADR-002). **Failed branches must NOT contribute to the evaluated set** — this is a common implementation error. For `anyOf`, **all matching branches** contribute (unlike oneOf where only one matches). `Validate()` computes the evaluated set dynamically from the matched branches' property declarations, not a static union of all branches.
 - `if/then/else` similarly requires knowing whether `if` matched to determine whether `then` or `else` properties are evaluated.
 - `patternProperties` keys that match a regex pattern are evaluated. The generator must emit pattern-matching logic in `Validate()` to check each raw key against all `patternProperties` patterns.
 - `unevaluatedItems` interaction with `contains`: Per JSON Schema 2020-12, items that match the `contains` schema are considered evaluated. When `unevaluatedItems: false` is combined with `contains` (but no `items`), elements evaluated by `prefixItems` (by position) and elements matching `contains` (by schema match) are both considered evaluated. The runtime must track which array indices matched `contains` during validation, in addition to the indices covered by `prefixItems`.

@@ -52,7 +52,7 @@ This matches openapi-fetch's philosophy of staying out of the way while acknowle
 
 ### 3. `(data, error)` Return Pattern
 
-API calls return `(T, error)` following Go conventions. HTTP error responses (4xx, 5xx) are returned as typed error values, not panics. This mirrors openapi-fetch's `{ data, error, response }` discriminated union pattern, adapted to Go idioms.
+API calls return `(T, error)` following Go conventions. HTTP error responses (4xx, 5xx) are returned as typed error values, not panics. This mirrors openapi-fetch's `{ data, error, response }` discriminated union pattern, adapted to Go idioms. When an operation defines response headers or multiple success status codes, `T` is a response wrapper struct that includes the body, status code, and typed header fields (see ADR-017 for details).
 
 ```go
 pet, err := openapigo.Do(ctx, client, api.GetPet, api.GetPetRequest{PetID: "123"})

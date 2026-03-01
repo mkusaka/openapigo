@@ -37,6 +37,16 @@ In the vast majority of cases, all pattern groups share the **same value type** 
 
 ## Decision
 
+**Type assumption**: `patternProperties` is an applicator keyword in JSON Schema that only applies to object instances — it does not assert that the instance must be an object. Per JSON Schema 2020-12, non-object instances are valid even when `patternProperties` is present (the keyword simply has no effect on them). The generator's behavior depends on the OAS version and whether `type` is explicitly set:
+
+**OAS version scope**: `patternProperties` is a JSON Schema keyword that is NOT part of OAS 3.0's Schema Object (OAS 3.0 uses a fixed subset of JSON Schema Draft 4, and `patternProperties` is not in that subset). It is available in OAS 3.1+ (which uses full JSON Schema 2020-12). When `patternProperties` is encountered in an OAS 3.0 spec, the generator emits a **generation-time warning** and ignores it: `WARN: patternProperties is not supported in OAS 3.0. Ignoring for schema "X".`
+
+For OAS 3.1+ specs, the generator's behavior depends on whether `type` is explicitly set:
+
+- **`type: object` (explicit)**: Generate as object with pattern property support.
+- **`type: <non-object>` (explicit, e.g., `type: string`)**: The generator emits a **generation-time warning** and **ignores `patternProperties`** for that schema, generating only the non-object type. The `patternProperties` keywords are unreachable for non-object instances and can be safely ignored. Warning: `WARN: schema "X" has patternProperties but type is "string" (not object). patternProperties has no effect on non-object instances and will be ignored.`
+- **`type` absent**: Consistent with ADR-009's rule that applicator keywords do NOT infer type in OAS 3.1 (JSON Schema 2020-12 semantics), the generator does **not** infer `type: object` from `patternProperties` alone. Instead, the Go type is `any`. If further analysis (e.g., all composition branches are objects) narrows the type to object, then `patternProperties` processing applies. Note: `properties` alone also does not infer object type in OAS 3.1 (per ADR-009); only explicit `type: object` or unambiguous composition analysis triggers object generation. This avoids generating a type that is narrower than the schema's actual constraints.
+
 ### Case 1: Single Pattern, Single Type → `map[string]T`
 
 When there is exactly one pattern, no `properties`, and either `additionalProperties: false` (non-pattern keys forbidden) or the value type is `any`, the schema maps to a typed map. When `additionalProperties` is absent and the value type is specific (e.g., `string`), the generator uses `map[string]json.RawMessage` instead (see Case 2's clarification on absent `additionalProperties`) to avoid unmarshal errors from non-pattern keys with different value types.
@@ -50,7 +60,10 @@ additionalProperties: false
 ```
 
 ```go
-type Extensions = map[string]string
+// Defined type (not alias) — enables Validate() attachment for key pattern checking.
+// Same rule as ADR-006: type alias when no constraints, defined type when constraints exist.
+// patternProperties inherently has key constraints, so a defined type is always used.
+type Extensions map[string]string
 ```
 
 Key pattern validation is generated in `Validate()`:
@@ -85,10 +98,11 @@ additionalProperties: false
 ```
 
 ```go
-type Extensions = map[string]string
+// Defined type for key pattern validation (same rationale as Case 1).
+type Extensions map[string]string
 ```
 
-`Validate()` checks that pattern-matched keys have correct value types and satisfy all constraints from their matching pattern schemas. **Clarification on `additionalProperties` absent and type safety**: When `additionalProperties` is absent (not explicitly set) and the pattern value type `T` is specific (e.g., `string`), keys not matching any pattern are still captured in `map[string]T` by `json.Unmarshal`. If such keys have values of a different type, unmarshal returns an error — rejecting input that is valid per the schema. **To avoid this false rejection**, the generator uses `map[string]json.RawMessage` (same as Case 3) when `additionalProperties` is absent AND the pattern value type is not `any`. This ensures that non-pattern keys with arbitrary value types don't cause unmarshal errors. The `map[string]T` form (Cases 1/2) is used only when (a) `additionalProperties: false` is set (non-pattern keys are forbidden), or (b) `additionalProperties` has the same type `T` as all patterns, or (c) all values can be `any`. Pattern matching is enforced only in `Validate()`: keys not matching any pattern are treated as validation errors only when `additionalProperties: false` is explicitly present. When `additionalProperties` is absent, `Validate()` only checks that pattern-matched keys have correct value types — keys matching no pattern are **not** validation errors (they are valid "additional properties" under the absent-means-true default). **Multi-pattern AND enforcement**: When a key matches multiple `patternProperties` regexes, JSON Schema requires the value to satisfy ALL matching patterns' schemas (AND semantics). `Validate()` checks each key against all matching patterns and reports errors for any constraint violation from any matching pattern. This includes ALL constraints from each pattern's schema (type, format, minLength, maxLength, pattern, minimum, maximum, etc.), not just type checks.
+`Validate()` checks that pattern-matched keys have correct value types and satisfy all constraints from their matching pattern schemas. **Clarification on `additionalProperties` absent and type safety**: When `additionalProperties` is absent (not explicitly set) and the pattern value type `T` is specific (e.g., `string`), keys not matching any pattern are still captured in `map[string]T` by `json.Unmarshal`. If such keys have values of a different type, unmarshal returns an error — rejecting input that is valid per the schema. **To avoid this false rejection**, the generator uses `map[string]json.RawMessage` (same as Case 3) when `additionalProperties` is absent AND the pattern value type is not `any`. This ensures that non-pattern keys with arbitrary value types don't cause unmarshal errors. The `map[string]T` form (Cases 1/2) is used only when (a) `additionalProperties: false` is set (non-pattern keys are forbidden), or (b) `additionalProperties` has the same type `T` as all patterns, or (c) all values can be `any`. Pattern matching is enforced only in `Validate()`: keys not matching any pattern are treated as validation errors only when `additionalProperties: false` is explicitly present. When `additionalProperties` is absent, the `--additional-properties` CLI flag does **not** apply to `patternProperties`-only schemas (per ADR-006, the flag's scope explicitly excludes `patternProperties`-only schemas — ADR-006 §Case 5 states this). For `patternProperties`-only schemas with absent `additionalProperties`, non-pattern keys are **present in the raw map** (because `json.Unmarshal` captures all object keys into `map[string]json.RawMessage`) but are **not subject to pattern validation** by `Validate()` — they are silently accepted, consistent with `additionalProperties` absent meaning "additional properties allowed". This is equivalent to ADR-006's `ignore` behavior but is unconditional (not flag-dependent). When `patternProperties` coexists with explicit `properties`, the schema is no longer "patternProperties-only" and the flag applies per ADR-006. `Validate()` only checks that pattern-matched keys have correct value types — keys matching no pattern are **not** validation errors under the absent-means-true default. **Multi-pattern AND enforcement**: When a key matches multiple `patternProperties` regexes, JSON Schema requires the value to satisfy ALL matching patterns' schemas (AND semantics). `Validate()` checks each key against all matching patterns and reports errors for any constraint violation from any matching pattern. This includes ALL constraints from each pattern's schema (type, format, minLength, maxLength, pattern, minimum, maximum, etc.), not just type checks.
 
 ### Case 3: Multiple Patterns, Different Types → `map[string]json.RawMessage` + Typed Accessors
 
@@ -108,12 +122,46 @@ type MixedPatternProps struct {
     entries map[string]json.RawMessage
 }
 
+// NewMixedPatternProps creates an empty MixedPatternProps ready for use.
+func NewMixedPatternProps() MixedPatternProps {
+    return MixedPatternProps{entries: make(map[string]json.RawMessage)}
+}
+
 func (m *MixedPatternProps) UnmarshalJSON(data []byte) error {
     return json.Unmarshal(data, &m.entries)
 }
 
 func (m MixedPatternProps) MarshalJSON() ([]byte, error) {
+    if m.entries == nil {
+        return []byte("{}"), nil // zero value → empty object, not null
+    }
     return json.Marshal(m.entries)
+}
+
+// SetExtension sets a string value for an x- prefixed key.
+func (m *MixedPatternProps) SetExtension(key, value string) error {
+    if m.entries == nil {
+        m.entries = make(map[string]json.RawMessage)
+    }
+    b, err := json.Marshal(value)
+    if err != nil {
+        return err
+    }
+    m.entries[key] = b
+    return nil
+}
+
+// SetNumericEntry sets an integer value for a numeric key.
+func (m *MixedPatternProps) SetNumericEntry(key string, value int) error {
+    if m.entries == nil {
+        m.entries = make(map[string]json.RawMessage)
+    }
+    b, err := json.Marshal(value)
+    if err != nil {
+        return err
+    }
+    m.entries[key] = b
+    return nil
 }
 
 // Typed accessor for ^x- pattern (string values)
@@ -278,7 +326,7 @@ type Mixed struct {
 
 **UnmarshalJSON**: Each key is tested against patterns first; only keys matching no pattern go to `AdditionalProperties`. This enforces JSON Schema's evaluation order: `patternProperties` takes precedence over `additionalProperties`.
 
-**MarshalJSON**: Pattern-matched entries are written from their respective pattern maps first, then `AdditionalProperties` entries. Keys in `AdditionalProperties` that match a pattern regex are **skipped** (they should have been classified into the pattern map during unmarshal). If such misclassified keys exist (e.g., from manual construction), they are silently dropped from output — `Validate()` is the authoritative mechanism for detecting misclassifications. Both maps use the `isKnownField` guard (ADR-006) to prevent overwriting known struct fields. This follows the same interaction semantics as ADR-006.
+**MarshalJSON**: Pattern-matched entries are written from their respective pattern maps first, then `AdditionalProperties` entries. Keys in `AdditionalProperties` that match a pattern regex cause `MarshalJSON` to **return an error** (they should have been classified into the pattern map during unmarshal or via the correct `Set*` method). This prevents silent data loss that would occur if misclassified keys were silently dropped — since `Validate()` is not called automatically (ADR-001), silent dropping would cause undetectable request body corruption. The error message directs the user to the correct method: `fmt.Errorf("key %q matches pattern %s but is in AdditionalProperties; use Set* method for pattern-matched keys", key, pattern)`. Both maps use the `isKnownField` guard (ADR-006) to prevent overwriting known struct fields. This follows the same interaction semantics as ADR-006.
 
 ### Regex Compilation
 
@@ -344,5 +392,5 @@ func (w Widget) Validate() error {
 
 ### Risks
 
-- Extremely complex regex patterns may not compile in Go's `regexp` package (Go uses RE2, which does not support lookahead/lookbehind). We document this limitation and fall back to `map[string]any` for unsupported patterns.
+- Extremely complex regex patterns may not compile in Go's `regexp` package (Go uses RE2, which does not support lookahead/lookbehind). The generator emits a **generation-time error** (consistent with ADR-013's `--pattern-incompatible=error` default): `ERROR: patternProperties regex "(?=.*[A-Z])" uses ECMA-262 features not supported by Go's RE2 engine. Generation aborted.` Silently falling back to `map[string]any` would drop both key and value constraints, creating a validation hole. Users who need unsupported patterns must use `--pattern-incompatible=warn` to explicitly accept the constraint loss.
 - When `patternProperties` and `additionalProperties` overlap (a key matches both a pattern and is "additional"), `patternProperties` takes precedence per JSON Schema spec. Our implementation must enforce this ordering.

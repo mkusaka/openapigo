@@ -253,8 +253,15 @@ requestBody:
 ```
 
 ```go
+// When requestBody.required: true
 type SendMessageRequest struct {
     Body string `body:"text/plain"`
+}
+
+// When requestBody.required: false (or absent) — pointer to distinguish
+// "no body" from "empty string"
+type SendMessageRequestOptional struct {
+    Body *string `body:"text/plain"`
 }
 ```
 
@@ -297,7 +304,7 @@ type CreatePetMultipartBody struct {
 }
 ```
 
-The runtime selects the media type based on which field is non-nil. If **multiple fields** are set, the runtime returns an error (ambiguous media type selection). If **zero fields** are set (all nil): the behavior depends on whether the request body is required. When `requestBody.required: true`, this is an error (no body to send). When `requestBody.required: false` (or absent), no request body is sent (the entire multi-media-type body is optional, and all-nil means "no body"):
+The runtime selects the media type based on which field is non-nil. **Typed-nil safety for `io.Reader` fields**: When a multi-media-type union includes an `io.Reader` field (e.g., `application/octet-stream`), the non-nil check uses `isNilReader()` (reflection-based nil check that handles typed-nil interfaces) rather than a simple `!= nil` comparison. This prevents a typed-nil `io.Reader` (e.g., `var r *bytes.Reader; body.Binary = r`) from being misidentified as "set". If **multiple fields** are set, the runtime returns an error (ambiguous media type selection). If **zero fields** are set (all nil): the behavior depends on whether the request body is required. When `requestBody.required: true`, this is an error (no body to send). When `requestBody.required: false` (or absent), no request body is sent (the entire multi-media-type body is optional, and all-nil means "no body"):
 
 ```go
 // Usage: JSON
@@ -351,9 +358,11 @@ type UploadRequestBody struct {
 
 The `json` modifier in the `form` tag tells the runtime to JSON-serialize the field's value as the part body, with `Content-Type: application/json` on that specific part.
 
+**Encoding scope and fail-fast**: The generator supports `encoding.contentType` (as shown above) for multipart fields. Other `encoding` properties (`style`, `explode`, `allowReserved`, `headers`) are **not supported** in this version. When the generator encounters unsupported `encoding` properties on **either** `multipart/form-data` or `application/x-www-form-urlencoded` fields, it emits a **generation-time error** rather than silently producing incorrect serialization: `ERROR: encoding property "style" on field "metadata" is not yet supported. Remove the encoding or use a custom serializer.` This fail-fast approach prevents silent interoperability bugs from incorrect serialization of fields with complex encoding rules. Notably, `application/x-www-form-urlencoded` supports the same `encoding` object as multipart (per OAS 3.1 §4.8.24.1), so the same fail-fast rule applies to both media types.
+
 ### Optional Request Body
 
-When `requestBody.required` is `false` (or absent) **and** the body uses a schema reference (e.g., `$ref: '#/components/schemas/PetUpdate'`), the body field is a pointer. For `application/octet-stream` with optional body, `io.Reader` is used with nil detection via `isNilReader` (see above). The pointer pattern applies specifically to JSON/form/multipart bodies:
+When `requestBody.required` is `false` (or absent), the body field is a pointer to distinguish "no body" from "empty body". This applies to **all** JSON/form/multipart body types regardless of whether the schema is a `$ref` or an inline definition — the need to represent "unsent" is the same in both cases. For `application/octet-stream` with optional body, `io.Reader` is used with nil detection via `isNilReader` (see above). For `text/plain`, `*string` is used (see above). The pointer pattern for JSON/form/multipart bodies:
 
 ```yaml
 requestBody:

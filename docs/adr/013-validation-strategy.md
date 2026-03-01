@@ -323,22 +323,21 @@ func isUnique[T comparable](s []T) bool {
 // because JSON Schema defines instance equality by mathematical value for numbers
 // (1 and 1.0 are equal), while reflect.DeepEqual(int(1), float64(1.0)) returns false.
 //
-// Canonicalization: each element is marshaled to JSON, unmarshaled into `any`
-// (which coerces all JSON numbers to float64), then re-marshaled to produce a
-// canonical JSON string. The re-marshal step (json.Marshal) sorts map keys
-// alphabetically, which normalizes key ordering.
+// Canonicalization: each element is marshaled to JSON, then unmarshaled into
+// `any` using json.NewDecoder with UseNumber() to preserve integer precision
+// (numbers become json.Number instead of float64). The result is then
+// re-marshaled to produce a canonical JSON string. The re-marshal step
+// (json.Marshal) sorts map keys alphabetically, which normalizes key ordering.
 // This ensures {"a":1,"b":2} and {"b":2,"a":1} are treated as equal, and
 // handles json.RawMessage fields whose original byte order may differ.
 //
-// LIMITATION: The unmarshal-to-any step coerces all JSON numbers to float64,
-// which loses precision for integers beyond 2^53 (e.g., 9007199254740992 and
-// 9007199254740993 both become the same float64). This means isUniqueAny may
-// incorrectly report two distinct large integers as duplicates, or fail to
-// detect that two values differing only beyond float64 precision are actually
-// identical. For arrays with large-integer items, users should ensure the item
-// type maps to int64 (which uses the isUnique fast path with exact comparison).
-// A future enhancement could use json.NewDecoder with UseNumber() to preserve
-// integer precision during canonicalization.
+// Numeric comparison: json.Number preserves the original string representation,
+// so "1" and "1.0" would compare as unequal by string comparison alone. The
+// canonicalization uses the same jsonEqual/big.Rat approach as marshalMerge
+// (ADR-002) for numeric comparison: both json.Number values are parsed via
+// new(big.Rat).SetString() and compared with Rat.Cmp(), ensuring mathematical
+// equality (1 == 1.0 == 1e0) while preserving precision for integers beyond
+// 2^53 (e.g., 9007199254740993 and 9007199254740992 are correctly distinguished).
 func isUniqueAny(s any) bool {
     rv := reflect.ValueOf(s)
     // Canonicalize each element: marshal → unmarshal to any → re-marshal
@@ -349,14 +348,22 @@ func isUniqueAny(s any) bool {
             // If marshaling fails, fall back to reflect.DeepEqual
             return isUniqueAnyFallback(rv)
         }
-        // Normalize: unmarshal to any (coerces numbers to float64)
+        // Normalize: unmarshal to any using UseNumber() to preserve integer precision.
+        // Without UseNumber(), json.Unmarshal coerces all numbers to float64,
+        // losing precision for integers > 2^53 (e.g., 9007199254740993 becomes
+        // 9007199254740992, causing false uniqueness failures).
+        dec := json.NewDecoder(bytes.NewReader(b))
+        dec.UseNumber()
         var normalized any
-        if err := json.Unmarshal(b, &normalized); err != nil {
+        if err := dec.Decode(&normalized); err != nil {
             return isUniqueAnyFallback(rv)
         }
         // Normalize negative zero: JSON Schema defines -0 == 0 (mathematical
         // equality), but json.Marshal(float64(-0)) produces "-0" ≠ "0".
         normalized = normalizeNegZero(normalized)
+        // Normalize numeric values: convert json.Number to canonical form via
+        // big.Rat for mathematical equality (1 == 1.0 == 1e0).
+        normalized = normalizeNumbers(normalized)
         // Re-marshal the normalized value for canonical string comparison
         canon, err := json.Marshal(normalized)
         if err != nil {
@@ -441,7 +448,7 @@ func (v Order) Validate() error {
 
 Validation is skipped for nil pointers and absent `Nullable[T]` values — you cannot validate a value that isn't there. Null `Nullable[T]` values are also skipped (the field is explicitly nullable per the schema, so null is a valid value):
 
-**Limitation**: For optional non-nullable fields (Go type `*T`), JSON `null` sets the pointer to nil — the same state as absent. `Validate()` cannot distinguish these cases and skips nil pointers unconditionally. This means null values on non-nullable `*T` fields are **not rejected** by `Validate()`. This is an inherent limitation of `encoding/json` v1's conflation of absent and null for pointer types (see ADR-004). Enforcement of the non-null constraint requires `rawFieldKeys` tracking (to detect the field's presence in the JSON) combined with a nil-pointer check, which is generated when `additionalProperties: false`, `unevaluatedProperties: false`, or `dependentRequired` triggers `rawFieldKeys` generation.
+**Non-nullable `*T` null detection**: For optional non-nullable fields (Go type `*T`), JSON `null` sets the pointer to nil — the same state as absent. A simple nil-pointer check alone cannot distinguish these cases. To enforce the non-nullable constraint, `Validate()` uses `rawFieldKeys` tracking: if the field key is present in `rawFieldKeys` AND the pointer is `nil`, the value was an explicit `null` → schema violation. The generator produces `rawFieldKeys` for structs with non-nullable `*T` fields when `Validate()` is generated (see ADR-012 for the canonical list of `rawFieldKeys` trigger conditions). When `--skip-validation` is specified, `rawFieldKeys` is not generated and null detection is unavailable.
 
 ```go
 // Optional field: skip if absent
@@ -478,7 +485,9 @@ func (v ComplexType) Validate() error {
     // detection — Go's nil check on *T cannot distinguish absent from JSON null,
     // but JSON Schema's dependentRequired triggers on property presence regardless
     // of value). rawFieldKeys is generated when any of: unevaluatedProperties: false,
-    // additionalProperties: false, or dependentRequired is present.
+    // additionalProperties: false, dependentRequired, dependentSchemas,
+    // complex if/then/else with if.required, or non-nullable *T fields
+    // with Validate() generation (see ADR-012 for the canonical list).
     if slices.Contains(v.rawFieldKeys, "creditCard") && !slices.Contains(v.rawFieldKeys, "billingAddress") { /* ... */ }
 
     // UnevaluatedProperties validation
@@ -494,16 +503,18 @@ func (v ComplexType) Validate() error {
 }
 ```
 
-### No Validate() When No Constraints
+### No Validate() When No Constraints (Leaf Rule)
 
-Types with no validation constraints do **not** get a `Validate()` method. This keeps generated code minimal and avoids empty methods.
+Types with no validation constraints **and no validatable descendants** do **not** get a `Validate()` method. This keeps generated code minimal and avoids empty methods.
+
+**Transitive generation rule**: A type receives a `Validate()` method if it has **any** of: (1) its own direct constraints (minLength, maxLength, pattern, etc.), (2) a field whose type implements `Validatable` (i.e., a child/descendant has constraints). This ensures the recursive validation chain (see "Recursive Validation" above) is never broken. Without this rule, an intermediate type with no direct constraints but with constrained descendants would lack `Validate()`, and a parent calling `v.Child.Validate()` would fail to compile. The generator performs a bottom-up analysis of the type graph: leaf types with constraints get `Validate()`, then any type referencing a validatable type also gets `Validate()` (even if it has no direct constraints of its own).
 
 ### CLI Flags
 
 | Flag | Effect |
 |------|--------|
 | `--skip-validation` | Do not generate `Validate()` methods at all |
-| `--validate-on-unmarshal` | Generate `UnmarshalJSON` that calls `Validate()` after parsing (**explicit opt-in** — overrides the default no-auto-validation contract from ADR-001) |
+| `--validate-on-unmarshal` | Generate `UnmarshalJSON` that calls `Validate()` after parsing (**explicit opt-in** — overrides the default no-auto-validation contract from ADR-001). **Mutually exclusive with `--skip-validation`**: specifying both flags is a generation-time error: `ERROR: --skip-validation and --validate-on-unmarshal are mutually exclusive. --skip-validation suppresses Validate() generation, but --validate-on-unmarshal requires Validate() to exist for UnmarshalJSON to call.` |
 | `--validate-on-unmarshal-skip=enum` | When combined with `--validate-on-unmarshal`, excludes specific validation categories from auto-validation. This allows strict validation on most constraints while preserving forward compatibility for enums (ADR-008's open enum default). Supported categories: `enum`, `const`, `pattern`, `all`. |
 
 The default generates `Validate()` but does not call it automatically. The `--validate-on-unmarshal` flag is an **explicit user override** of the ADR-001 principle (which states validation is not called automatically *by default*): when a user passes this flag, they are deliberately choosing stricter behavior at the cost of the thin-wrapper philosophy. This flag is never the default and is clearly documented as a deviation.
@@ -529,14 +540,18 @@ The default generates `Validate()` but does not call it automatically. The `--va
 
 ### Risks
 
-- `pattern` regex in OpenAPI uses ECMA-262 (JavaScript) regex syntax, while Go uses RE2. Some patterns (lookahead, backreferences) are not supported in Go. The generator attempts to compile each pattern with `regexp.Compile()`; if compilation fails:
-  1. A **generation-time warning** is emitted: `WARN: Pattern "(?=.*[A-Z])" uses ECMA-262 features not supported by Go's RE2 engine. This constraint will not be validated at runtime.`
-  2. The specific `pattern` constraint is **omitted** from the generated `Validate()` method (no code is generated for it).
-  3. A comment is added to the generated code noting the skipped constraint.
+- `pattern` regex in OpenAPI uses ECMA-262 (JavaScript) regex syntax, while Go uses RE2. Some patterns (lookahead, backreferences) are not supported in Go. The generator attempts to compile each pattern with `regexp.Compile()`; if compilation fails, behavior depends on the `--pattern-incompatible` flag:
 
-  **Impact**: The generated code does NOT silently skip the constraint at runtime — the constraint is entirely absent from the generated `Validate()`. This is a **known coverage gap**: the schema's `pattern` constraint goes unenforced. Users who need these patterns should use a ECMA-262-compatible regex library via custom validation middleware.
+  | Flag value | Behavior |
+  |-----------|----------|
+  | `error` (default) | **Generation-time error**: `ERROR: Pattern "(?=.*[A-Z])" uses ECMA-262 features not supported by Go's RE2 engine. Generation aborted.` This is the safe default — it forces the user to address the incompatibility explicitly. |
+  | `warn` | **Generation-time warning** + constraint omitted from `Validate()` + comment in generated code. The `pattern` constraint goes unenforced at runtime. |
+  | `skip` | Silently omit the constraint. Not recommended for production use. |
+
+  **Rationale for default=error**: A `pattern` constraint that silently goes unenforced is a validation hole that can admit invalid data in production. Making this an error by default ensures users are aware of the gap and must explicitly opt into the weaker behavior. Users who need these patterns should use a ECMA-262-compatible regex library via custom validation middleware.
 
   ```go
+  // When --pattern-incompatible=warn:
   // WARNING: Pattern "(?=.*[A-Z])" uses ECMA-262 features not supported
   // by Go's regexp package. This constraint is NOT validated.
   // Use custom validation if strict pattern checking is required.

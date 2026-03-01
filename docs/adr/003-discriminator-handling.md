@@ -177,7 +177,7 @@ func (v *CatOrDogOneOf) UnmarshalJSON(data []byte) error {
 
 ### Strategy 3: Unique Property Names
 
-When required fields overlap (or are not specified), we look for properties that are unique to each variant — properties that exist in one schema but not in any other.
+When required fields overlap (or are not specified), we look for **required** properties that are unique to each variant — properties that are both required and exist in one schema but not in any other. Only required properties are used because optional properties may be absent in a valid instance, causing false-negative matches. If no required unique properties exist for all variants, this strategy is not applicable and the generator falls back to Strategy 4 or 5.
 
 **Limitation**: This heuristic uses schema-defined property names, not runtime validation. Since JSON Schema (with absent `additionalProperties`) allows any properties in an object, the presence of a "unique" property does not strictly prove the value conforms to that variant's schema. However, in practice, API responses include only documented properties, making this heuristic reliable for well-defined specs. The generator emits a warning when this strategy is used, recommending discriminator addition for robust variant detection.
 
@@ -361,8 +361,8 @@ When a base schema has a discriminator and variants extend it via allOf, the gen
 
 1. Identifies the inheritance relationship (variant uses `allOf` with the base schema)
 2. Flattens the base schema's fields into each variant struct
-3. Discovers all schemas that extend the base via allOf (by scanning the spec's schema graph)
-4. Generates the discriminated union type at the base schema's reference points, with variants comprising all discovered extending schemas
+3. Determines the variant set: if `discriminator.mapping` is present, only the mapped schemas are included. Otherwise, discovers all schemas that extend the base via allOf (by scanning the spec's schema graph) and emits a warning recommending explicit mapping
+4. Generates a **separate** discriminated union type (`PetOneOf`) alongside the base type (`Pet`). **Reference resolution**: `$ref` to a schema with a discriminator resolves to the **union type** (`PetOneOf`) everywhere — in response bodies, request bodies, model properties, array items, etc. The sole exception is within `allOf` (for inheritance), where the reference resolves to the **base type** (`Pet`) to flatten fields. This ensures discriminator dispatch is preserved wherever the polymorphic schema is used
 
 ```yaml
 Pet:
@@ -392,22 +392,19 @@ type Dog struct {
     Bark    bool   `json:"bark,omitzero"`
 }
 
-// Pet retains its identity as a base struct for contexts that reference
-// the schema without polymorphism (e.g., shared field access, parameter types).
+// Pet is the base struct with shared fields. It is used within allOf
+// for field inheritance. Both Pet and PetOneOf are always generated.
 type Pet struct {
     PetType string `json:"petType"`
 }
 
-// PetOneOf is the discriminated union type, used where polymorphic dispatch
-// is needed (response bodies, etc.).
-//
-// Context resolution rule: The generator determines which type to use per
-// usage site. A $ref to '#/components/schemas/Pet' resolves to:
-//   - PetOneOf: when used in a response body, request body, or any context
-//     where the discriminator is relevant (polymorphic dispatch needed).
-//   - Pet: when used as an allOf base for field inheritance, or in parameter
-//     types where only shared fields are needed.
-// The generator tracks each $ref usage site and its enclosing context.
+// PetOneOf is the discriminated union type.
+// $ref resolution: references to a discriminator-bearing schema resolve to
+// PetOneOf everywhere (response bodies, request bodies, model properties,
+// array items, etc.) EXCEPT within allOf inheritance (where Pet is used
+// for field flattening). See "allOf Inheritance Pattern" above.
+// The Pet base type is also exported for direct use when users need access
+// to shared fields without discriminator dispatch.
 type PetOneOf struct {
     Cat *Cat
     Dog *Dog
@@ -453,6 +450,8 @@ func (v *PetOneOf) UnmarshalJSON(data []byte) error {
     return &UnknownDiscriminatorError{Property: "petType", Value: disc}
 }
 ```
+
+**Base schema as abstract type**: In the allOf inheritance + discriminator pattern, the base schema (`Pet`) acts as an **abstract type** — valid API responses always match one of the known variant types (`Cat`, `Dog`), identified by the discriminator value. An unknown discriminator value produces `UnknownDiscriminatorError`. This is the standard behavior across all OpenAPI generators that support discriminators (oapi-codegen, ogen, etc.) and matches the OpenAPI spec's intent: the discriminator mechanism explicitly declares that the property value determines the concrete type. If the API can return values that don't match any known variant, the spec should either (a) add those types to the discriminator mapping, or (b) not use a discriminator.
 
 ### Interface Generation for oneOf with Discriminator
 
@@ -544,4 +543,4 @@ func extractDiscriminator(data []byte, field string) (string, error) {
 ### Risks
 
 - Some APIs place the discriminator field deep in the object or use non-string discriminators (e.g., integer enum). We currently only support top-level string discriminator fields. When the generator detects non-string discriminators or discriminator fields not at the top level, it selects a lower-priority strategy **at code generation time** (e.g., required-field detection or try-all fallback instead of discriminator routing). At runtime, once a discriminator-based strategy is chosen, `extractDiscriminator` errors (missing field, invalid type) are always returned immediately — there is no runtime fallback to other strategies. Note: **nested discriminated unions** (oneOf within oneOf, each with its own top-level discriminator) are fully supported (see "Nested Discriminators" section above) — each level handles its own discriminator independently.
-- **Discriminator routing does not guarantee schema validity**: after `json.Unmarshal` succeeds for the discriminator-selected variant, the data may still not conform to the variant's full schema (because `encoding/json` v1 ignores unknown fields and zero-initializes missing fields). This is acceptable for the generated struct (fields that are present in JSON are correctly populated), but `Validate()` should be called when strict schema conformance is required. Users who want automatic enforcement should use `--validate-on-unmarshal` (ADR-013), which calls `Validate()` at the end of `UnmarshalJSON`. The generator emits a comment on discriminator-based `UnmarshalJSON` noting this: `// NOTE: Unmarshal populates known fields; call Validate() for full schema conformance.`
+- **Discriminator routing does not guarantee schema validity**: after `json.Unmarshal` succeeds for the discriminator-selected variant, the data may still not conform to the variant's full schema (because `encoding/json` v1 ignores unknown fields and zero-initializes missing required fields). This is consistent with the project's opt-in validation principle (ADR-001, ADR-013): `UnmarshalJSON` handles deserialization; `Validate()` handles schema compliance. **To enforce strict schema conformance**, users should either (a) call `Validate()` after unmarshal, or (b) use `--validate-on-unmarshal` (ADR-013), which automatically calls `Validate()` at the end of `UnmarshalJSON`. The generator emits a comment on discriminator-based `UnmarshalJSON` noting this: `// NOTE: Unmarshal populates known fields; call Validate() for full schema conformance.` This is the same behavior as non-discriminated types — no Go JSON library validates schema constraints during unmarshal by default.

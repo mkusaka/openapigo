@@ -257,10 +257,11 @@ Go does not have tuple types. We map this to a generated struct with positional 
 
 ```go
 type StringIntBoolTuple struct {
-    V0  string
-    V1  int64
-    V2  bool
-    Len int // number of elements present (set by UnmarshalJSON)
+    V0              string
+    V1              int64
+    V2              bool
+    Len             int                // number of prefix elements present (set by UnmarshalJSON, max 3)
+    AdditionalItems []json.RawMessage  // elements beyond prefix positions (items absent = items: true)
 }
 
 func (t *StringIntBoolTuple) UnmarshalJSON(data []byte) error {
@@ -290,21 +291,55 @@ func (t *StringIntBoolTuple) UnmarshalJSON(data []byte) error {
             return fmt.Errorf("element 2: %w", err)
         }
     }
+    // Preserve additional elements beyond prefix (items absent = items: true)
+    if len(arr) > 3 {
+        t.AdditionalItems = arr[3:]
+    }
     return nil
 }
 
 func (t StringIntBoolTuple) MarshalJSON() ([]byte, error) {
-    arr := make([]any, 0, t.Len)
-    if t.Len >= 1 { arr = append(arr, t.V0) }
-    if t.Len >= 2 { arr = append(arr, t.V1) }
-    if t.Len >= 3 { arr = append(arr, t.V2) }
+    arr := make([]json.RawMessage, 0, t.Len+len(t.AdditionalItems))
+    if t.Len >= 1 {
+        b, err := json.Marshal(t.V0)
+        if err != nil {
+            return nil, fmt.Errorf("element 0: %w", err)
+        }
+        arr = append(arr, b)
+    }
+    if t.Len >= 2 {
+        b, err := json.Marshal(t.V1)
+        if err != nil {
+            return nil, fmt.Errorf("element 1: %w", err)
+        }
+        arr = append(arr, b)
+    }
+    if t.Len >= 3 {
+        b, err := json.Marshal(t.V2)
+        if err != nil {
+            return nil, fmt.Errorf("element 2: %w", err)
+        }
+        arr = append(arr, b)
+    }
+    arr = append(arr, t.AdditionalItems...)
     return json.Marshal(arr)
 }
 ```
 
-The `Len` field tracks how many positional elements were present during unmarshal (set in `UnmarshalJSON`). This ensures round-trip fidelity: unmarshaling `["hello"]` produces `Len: 1`, and `MarshalJSON` outputs `["hello"]` — not `["hello", 0, false]`. When constructing a tuple in Go code, users must set `Len` to indicate how many fields are meaningful.
+The `Len` field tracks how many prefix elements were present during unmarshal (capped at the prefix count). This ensures round-trip fidelity for short arrays: unmarshaling `["hello"]` produces `Len: 1`, and `MarshalJSON` outputs `["hello"]` — not `["hello", 0, false]`. `AdditionalItems` preserves elements beyond the prefix positions (when `items` is absent, defaulting to `items: true`). Example: `["hello", 1, true, "extra", 42]` → `Len: 3, AdditionalItems: [\"extra\", 42]` → re-marshals to the same array.
 
-**`prefixItems` without `items`**: When `items` is absent (no keyword), JSON Schema 2020-12 defaults to `items: true` — additional elements beyond the prefix are allowed with no constraints. The generated struct does **not** preserve these additional elements (they are silently dropped during unmarshal, similar to how `encoding/json` drops unknown object fields). If users need to preserve additional elements, they should explicitly declare `items: <schema>` in their OpenAPI spec, which triggers the `AdditionalItems` field generation shown below.
+**Constructor for safe manual construction**: The generator produces a constructor function for each tuple type that sets `Len` automatically, preventing silent data loss from forgotten `Len`:
+
+```go
+// NewStringIntBoolTuple creates a tuple with all prefix fields populated (Len = 3).
+func NewStringIntBoolTuple(v0 string, v1 int64, v2 bool) StringIntBoolTuple {
+    return StringIntBoolTuple{V0: v0, V1: v1, V2: v2, Len: 3}
+}
+```
+
+**Validate() safety net**: `Validate()` detects likely `Len` misuse — when `Len == 0` but any prefix field has a non-zero value, it returns a validation error: `"Len is 0 but prefix fields are non-zero; use NewStringIntBoolTuple() or set Len manually"`. This catches the most common mistake (constructing via struct literal without setting `Len`).
+
+**`prefixItems` without `items`**: When `items` is absent (no keyword), JSON Schema 2020-12 defaults to `items: true` — additional elements beyond the prefix are allowed with no constraints. To preserve round-trip fidelity (critical for proxies and relay services), the generated struct includes an `AdditionalItems []json.RawMessage` field that captures elements beyond the prefix positions. This prevents silent data loss during unmarshal → re-marshal cycles. The `UnmarshalJSON` captures `arr[prefixCount:]` into `AdditionalItems`, and `MarshalJSON` appends them after the prefix elements. When `items: false` is explicit, `AdditionalItems` is **not** generated and extra elements are rejected by `Validate()`.
 
 When `prefixItems` is combined with `items` (additional items beyond the tuple prefix), we add a catch-all field:
 
@@ -319,11 +354,14 @@ items:
 
 ```go
 type MyTuple struct {
-    V0             string
-    V1             int64
-    AdditionalItems []bool
+    V0              string
+    V1              int64
+    Len             int    // number of prefix elements present (set by UnmarshalJSON, max 2)
+    AdditionalItems []bool // typed additional items (items: {type: boolean})
 }
 ```
+
+The `Len` field tracks prefix element presence (same as the `prefixItems`-only case above). `UnmarshalJSON` sets `Len` to `min(len(arr), prefixCount)`, and `MarshalJSON` uses it to emit only the prefix elements that were present. `AdditionalItems` holds elements beyond the prefix, typed per the `items` schema.
 
 ### Deprecated
 
@@ -405,7 +443,11 @@ TreeNode:
         $ref: '#/components/schemas/TreeNode'
 ```
 
-In Go, recursive types require indirection to break the infinite size. Slice-based recursion (e.g., `[]TreeNode`) works without pointers because a Go slice header is fixed-size. However, for **direct struct recursion** (e.g., `TreeNode` containing a `TreeNode` field), a pointer is needed. Array-of-self recursion via slices is the common case:
+In Go, recursive types require indirection to break the infinite size. Slice-based recursion (e.g., `[]TreeNode`) works without pointers because a Go slice header is fixed-size. However, for **direct struct recursion** (e.g., `TreeNode` containing a `TreeNode` field), a pointer is needed. Array-of-self recursion via slices is the common case.
+
+**Recursive type alias prohibition**: Go prohibits recursive type aliases (`type X = map[string]X` is `invalid recursive type`), while recursive defined types (`type X map[string]X`) are valid. This applies to both self-recursion and mutual recursion (e.g., `type A = map[string]B; type B = map[string]A` is also invalid). The generator enforces the following rule: **schemas involved in a recursive cycle MUST be generated as defined types (`type X ...`), never as type aliases (`type X = ...`).** The cycle detector (see below) marks all schemas on a cycle, and the type emitter checks this flag to force defined types. This applies to all container forms (maps, slices, structs) — though in practice, only map and slice aliases hit this constraint, since struct aliases also cannot be recursive. Reference: [Go Language Spec — Type declarations](https://go.dev/ref/spec#Type_declarations).
+
+Example:
 
 ```go
 type TreeNode struct {
@@ -414,7 +456,7 @@ type TreeNode struct {
 }
 ```
 
-The generator detects cycles in the schema reference graph using a **visited set** during depth-first traversal and automatically inserts pointer indirection **only where structurally needed**. Specifically, pointer indirection is inserted at a back-edge only when the reference would cause an infinite-size struct — i.e., when the field type is a **direct struct** (not behind a slice, map, or pointer, which already provide indirection). For example, `[]TreeNode` does not need `[]*TreeNode` because a slice header is fixed-size; but a field `Parent TreeNode` needs `Parent *TreeNode`. **Mutual recursion** (e.g., `A → B → A`) is supported: the cycle detector operates on the full `$ref` graph, not just self-references. For mutual recursion, the pointer is inserted at the **first back-edge** encountered during depth-first traversal that requires indirection (deterministic because schemas are processed in alphabetical order). Example: `A.field1 → B`, `B.field2 → A` → one of the fields gets `*A` or `*B` (whichever closes the cycle first in DFS order).
+The generator detects cycles in the schema reference graph using **three-color DFS** (white/grey/black) and automatically inserts pointer indirection **only where structurally needed**. The three states are: (1) **white** (unvisited) — not yet encountered, (2) **grey** (visiting) — currently on the DFS stack (ancestor in the current path), (3) **black** (visited) — fully processed (all descendants explored). A **back-edge** is detected when DFS encounters a grey node — this indicates a cycle. A **cross-edge** (encountering a black node) is not a cycle and does not require pointer insertion. This three-color distinction is critical for correctness: a binary visited set cannot distinguish back-edges from cross-edges, which would lead to either missed cycles or spurious pointer insertions in diamond-shaped reference graphs. Pointer indirection is inserted at a back-edge only when the reference would cause an infinite-size struct — i.e., when the field type is a **direct struct** (not behind a slice, map, or pointer, which already provide indirection). For example, `[]TreeNode` does not need `[]*TreeNode` because a slice header is fixed-size; but a field `Parent TreeNode` needs `Parent *TreeNode`. **Mutual recursion** (e.g., `A → B → A`) is supported: the cycle detector operates on the full `$ref` graph, not just self-references. For mutual recursion, the pointer is inserted at the **first back-edge** encountered during DFS that requires indirection (deterministic because schemas are processed in alphabetical order). Example: `A.field1 → B`, `B.field2 → A` → one of the fields gets `*A` or `*B` (whichever closes the cycle first in DFS order). **N-type cycles** (e.g., `A → B → C → A`) are handled identically — back-edge detection via grey-node check works for any cycle length.
 
 ## Consequences
 
@@ -436,4 +478,4 @@ The generator detects cycles in the schema reference graph using a **visited set
 ### Risks
 
 - Custom format mappings (`--format-mapping`) increase complexity and may produce type mismatches if the custom type doesn't implement `json.Marshaler`/`json.Unmarshaler`. We document the interface requirements.
-- Recursive schemas with multiple mutual references may produce complex pointer patterns. The cycle detector handles common mutual recursion (two-type cycles like `A → B → A`) but exotic cases (three or more types forming a cycle, or multiple independent cycles) may require manual review of the generated pointer placement.
+- Recursive schemas with multiple mutual references may produce complex pointer patterns. The three-color DFS cycle detector (see Decision section) correctly handles cycles of any length (2-type, 3-type, N-type) and multiple independent cycles. For each cycle, a pointer is inserted at the first back-edge requiring indirection (deterministic due to alphabetical schema processing order). The algorithm is O(V+E). The generated pointer placement is always correct for well-formed OpenAPI schemas — every direct-struct cycle gets at least one pointer, and no spurious pointers are inserted for non-cyclic diamond references.

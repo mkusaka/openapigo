@@ -55,8 +55,8 @@ Go APIs use `(T, error)` returns. The `error` interface is the standard mechanis
 
 `openapigo.Do()` returns `(*Resp, error)` where:
 
-- **2xx responses** → parsed into `*Resp` (the success type from the Endpoint definition)
-- **3xx responses** → normally followed automatically by Go's `http.Client` (default redirect policy). If the client's `CheckRedirect` returns `http.ErrUseLastResponse` (stop following but not an error), the 3xx response arrives at `Do()` with `err == nil` and is processed through `parseError` like 4xx/5xx responses. If 3xx error handlers are registered on the endpoint (via `WithErrors` with `StatusRange: "3XX"` or exact status codes like `301`, `302`), the response body is parsed into the typed error. If no 3xx handler is registered, the response falls through to the `default` handler (if registered). If no `default` handler is registered either, a generic `APIError` with the raw body is returned. If `CheckRedirect` returns any other error, it is returned as a transport-level error (wrapped). **Note**: 3XX range handling is an extension of the base error handling defined in ADR-014 (which covers 4XX/5XX). The `ErrorHandler` type supports any status code range; ADR-014 focuses on the most common cases while this ADR documents the full range support including 3XX.
+- **2xx responses defined in the spec** → parsed into `*Resp` (the success type from the Endpoint definition). **Undefined 2xx**: When a 2xx status code is received that is NOT defined in the OpenAPI spec's responses (e.g., spec defines only `200` but server returns `202`), the behavior depends on whether a `2XX` range response is defined: (1) if a `2XX` range response is defined, the generated Endpoint leaves `successCodes` empty (all 2xx are success per `isSuccessStatus` default behavior, see ADR-014), and the range schema is used for parsing, (2) if only specific codes are defined (no `2XX` range), the generated Endpoint calls `WithSuccessCodes(200)` (or the specific defined codes), so `isSuccessStatus` returns `false` for undefined 2xx codes, and the response falls through to error handling — if a `default` response is defined, the default handler parses it; otherwise, it becomes an `UnexpectedStatusError`. This mechanism is implemented via ADR-014's `isSuccessStatus`: when `successCodes` is explicitly set, only those codes are success; undefined 2xx codes reach `parseError`. `UnexpectedStatusError` embeds `APIError` and is extractable via `errors.As`
+- **3xx responses with OpenAPI-defined response schema** → When the OpenAPI spec defines a 3xx response code that can carry a body (e.g., `300 Multiple Choices`, `301 Moved Permanently`, `302 Found`, `307 Temporary Redirect`), the generated Endpoint includes a response handler for that status code. **Note**: Per RFC 9110, `304 Not Modified` MUST NOT contain a message body — if the spec defines a `304` response, the generator treats it as a **no-body response** (similar to 204) and does not attempt to parse a body. **Critically**, when any 3xx response is defined in the spec, the runtime's `Do()` sets a per-request `CheckRedirect` policy that returns `http.ErrUseLastResponse` for the specific defined 3xx codes, preventing `http.Client` from following those redirects automatically. This ensures the 3xx response reaches `Do()` for handling. Non-defined 3xx codes still follow the default redirect behavior. For 3xx codes with bodies, `Do()` parses the response body using the schema defined in the spec. The response is returned as `(*Resp, error)` — the generator decides whether the 3xx is a success or error based on the spec context: 3xx codes are registered via `WithErrors` by default (they are typically error-like redirects), but can be registered as success codes via `WithSuccessCodes` when the API uses them as normal responses. **Default behavior for non-defined 3xx**: When no 3xx response is defined in the spec, Go's `http.Client` follows redirects automatically (default behavior, `Do()` does not override `CheckRedirect`).
 - **4xx/5xx responses** → parsed into a typed error and returned as `error`
 - **Network/transport errors** → returned as `error` (wrapped)
 
@@ -77,11 +77,16 @@ We generate a structured error hierarchy:
 // ===== Runtime library =====
 
 // APIError is the base error for all non-2xx HTTP responses.
+// Body is capped at maxErrorBodyBytes (default: 1 MiB) to prevent OOM from
+// large HTML error pages or malicious responses. When the response body exceeds
+// the limit, Body contains the first maxErrorBodyBytes bytes and BodyTruncated
+// is set to true. The limit is configurable via WithMaxErrorBodyBytes().
 type APIError struct {
-    StatusCode int
-    Status     string
-    Header     http.Header
-    Body       []byte // raw response body
+    StatusCode    int
+    Status        string
+    Header        http.Header
+    Body          []byte // raw response body (capped at maxErrorBodyBytes)
+    BodyTruncated bool   // true if Body was truncated due to size limit
 }
 
 func (e *APIError) Error() string {
@@ -199,24 +204,25 @@ func Do[Req, Resp any](ctx context.Context, c *Client, ep Endpoint[Req, Resp], r
     // Note: 3xx redirects are typically followed by http.Client before reaching here.
     // If CheckRedirect returns http.ErrUseLastResponse, the 3xx response arrives
     // here with err == nil and is handled as a non-success response below.
-    switch {
-    case resp.StatusCode >= 200 && resp.StatusCode < 300:
+    // Success status codes: 2xx by default, plus any status codes explicitly
+    // listed in the Endpoint's success handlers (e.g., 304 when the OpenAPI spec
+    // defines a 304 response). The generated Endpoint includes success status codes
+    // from the spec's response definitions.
+    if ep.isSuccessStatus(resp.StatusCode) {
         return parseSuccess[Resp](resp)
-    default:
-        // 3xx (unredirected), 4xx, 5xx — all go through parseError.
-        // parseError matches handlers in order: exact status → range (3XX/4XX/5XX) → default.
-        return nil, parseError(resp, ep.errorParsers)
     }
+    // Non-success: 3xx (unredirected, not in success set), 4xx, 5xx.
+    // parseError matches handlers: exact status → range (3XX/4XX/5XX) → default.
+    return nil, parseError(resp, ep.errorParsers)
 }
 ```
 
 Error parsers are registered per endpoint via the generated Endpoint variable. Handlers support exact status codes, status code ranges (3XX, 4XX, 5XX), and a default fallback:
 
 ```go
-var GetPet = openapigo.Endpoint[GetPetRequest, Pet]{
-    Method: "GET",
-    Path:   "/pets/{petId}",
-}.WithErrors(
+var GetPet = openapigo.NewEndpoint[GetPetRequest, Pet]("GET", "/pets/{petId}").
+    WithSuccessCodes(200).
+    WithErrors(
     openapigo.ErrorHandler{Status: 400, Parse: parseGetPet400Error},
     openapigo.ErrorHandler{Status: 404, Parse: parseGetPet404Error},
     openapigo.ErrorHandler{StatusRange: "3XX", Parse: parseGetPetRedirectError}, // catch-all for unredirected 3xx
@@ -237,10 +243,7 @@ responses:
 ```
 
 ```go
-var DeletePet = openapigo.Endpoint[DeletePetRequest, openapigo.NoContent]{
-    Method: "DELETE",
-    Path:   "/pets/{petId}",
-}
+var DeletePet = openapigo.NewEndpoint[DeletePetRequest, openapigo.NoContent]("DELETE", "/pets/{petId}")
 
 // Usage
 _, err := openapigo.Do(ctx, client, api.DeletePet, req)
@@ -277,10 +280,7 @@ type CreatePetResponse struct {
     StatusCode int
 }
 
-var CreatePet = openapigo.Endpoint[CreatePetRequest, CreatePetResponse]{
-    Method: "POST",
-    Path:   "/pets",
-}
+var CreatePet = openapigo.NewEndpoint[CreatePetRequest, CreatePetResponse]("POST", "/pets")
 ```
 
 The user checks which response was received:
@@ -329,11 +329,22 @@ For operations with response headers, the Endpoint's response type is the wrappe
 Users who need access to the raw `*http.Response` can use `DoRaw`:
 
 ```go
-resp, httpResp, err := openapigo.DoRaw(ctx, client, api.GetPet, req)
-// httpResp is *http.Response — body already consumed
-// resp is *api.Pet (or nil on error)
+httpResp, err := openapigo.DoRaw(ctx, client, api.GetPet, req)
+// httpResp is *http.Response — body is NOT consumed (caller owns it)
+// err is a transport-level error only (non-nil if the HTTP request itself failed)
+// The caller is responsible for reading and closing the body.
+defer httpResp.Body.Close()
+
+// Caller can read the body themselves:
+body, _ := io.ReadAll(httpResp.Body)
+```
+
+`DoRaw` does **not** parse the response body or apply error handlers — it returns the raw `*http.Response` with the body unconsumed. This is the escape hatch for use cases where callers need full control over the response (e.g., streaming, custom parsing, body inspection). For typed parsing with raw response access, use `DoWithResponse`:
+
+```go
+resp, httpResp, err := openapigo.DoWithResponse(ctx, client, api.GetPet, req)
+// resp is *api.Pet (parsed), httpResp is *http.Response (body consumed)
 // err is typed API error or transport error
-defer httpResp.Body.Close() // already drained, but good practice
 ```
 
 ### Streaming Responses
@@ -353,10 +364,7 @@ responses:
 ```
 
 ```go
-var StreamEvents = openapigo.StreamEndpoint[StreamEventsRequest, Event]{
-    Method: "GET",
-    Path:   "/events",
-}
+var StreamEvents = openapigo.NewStreamEndpoint[StreamEventsRequest, Event]("GET", "/events")
 
 // Usage: returns iter.Seq2[Event, error]
 for event, err := range openapigo.DoStream(ctx, client, api.StreamEvents, req) {
@@ -369,7 +377,7 @@ for event, err := range openapigo.DoStream(ctx, client, api.StreamEvents, req) {
 
 `DoStream` returns an iterator that reads the response body incrementally. The connection is held open until the iterator is exhausted or the context is canceled.
 
-**Error handling**: `DoStream` checks the initial HTTP response status code **before** entering the streaming loop. On non-2xx responses, the iterator yields a single `(zero, error)` pair where the error follows the same `parseError` logic as `Do()` (exact status → range → default handler, per ADR-014). The connection is then closed. This ensures consistent error handling between `Do()` and `DoStream()` — callers can use the same `errors.As` patterns for both. Mid-stream errors (connection drops, malformed events) are yielded as `(zero, error)` pairs during iteration, wrapped in a `*StreamError` type (distinct from `*APIError`) to allow callers to distinguish initial HTTP errors from mid-stream failures.
+**Error handling**: `DoStream` checks the initial HTTP response status code **before** entering the streaming loop using the same `isSuccessStatus` logic as `Do()` (per ADR-014 — checks `successCodes` if set, otherwise all 2xx). On non-success responses, the iterator yields a single `(zero, error)` pair where the error follows the same `parseError` logic as `Do()` (exact status → range → default handler, per ADR-014). The connection is then closed. This ensures consistent error handling between `Do()` and `DoStream()` — callers can use the same `errors.As` patterns for both, and the success/failure boundary is identical for both functions. Mid-stream errors (connection drops, malformed events) are yielded as `(zero, error)` pairs during iteration, wrapped in a `*StreamError` type (distinct from `*APIError`) to allow callers to distinguish initial HTTP errors from mid-stream failures.
 
 ### Status Code Ranges
 
@@ -413,10 +421,7 @@ responses:
 
 ```go
 // Binary response
-var DownloadFile = openapigo.Endpoint[DownloadFileRequest, openapigo.BinaryResponse]{
-    Method: "GET",
-    Path:   "/files/{fileId}",
-}
+var DownloadFile = openapigo.NewEndpoint[DownloadFileRequest, openapigo.BinaryResponse]("GET", "/files/{fileId}")
 
 // openapigo.BinaryResponse wraps io.ReadCloser
 type BinaryResponse struct {
@@ -444,5 +449,5 @@ type BinaryResponse struct {
 
 ### Risks
 
-- APIs that don't define error response schemas produce untyped `APIError` (raw body as `[]byte`). This is common — many specs only define success responses. We document this and provide `APIError.Body` for manual parsing.
+- APIs that don't define error response schemas produce untyped `APIError` (raw body as `[]byte`, capped at `maxErrorBodyBytes`). This is common — many specs only define success responses. We document this and provide `APIError.Body` for manual parsing. The default body size limit (1 MiB) is configurable via `openapigo.WithMaxErrorBodyBytes(n)` on the Client. Setting to 0 disables the limit (not recommended for production).
 - Streaming responses hold HTTP connections open. If the user forgets to drain the iterator, connections may leak. We document the requirement and close the body on context cancellation.

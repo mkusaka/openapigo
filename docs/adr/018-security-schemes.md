@@ -128,14 +128,17 @@ func WithBasicAuth(username, password string) openapigo.Middleware {
 }
 ```
 
-**Other HTTP schemes** (e.g., `digest`, `hoba`, `mutual`, `negotiate`, `vapid`): The OpenAPI `http` security scheme's `scheme` field accepts any value from the [IANA HTTP Authentication Scheme Registry](https://www.iana.org/assignments/http-authschemes/). For schemes beyond `basic` and `bearer`, we generate a generic middleware that sets the `Authorization` header with the scheme name:
+**Other HTTP schemes** (e.g., `digest`, `hoba`, `mutual`, `negotiate`, `vapid`): The OpenAPI `http` security scheme's `scheme` field accepts any value from the [IANA HTTP Authentication Scheme Registry](https://www.iana.org/assignments/http-authschemes/). For schemes beyond `basic` and `bearer` that require multi-step authentication flows (challenge-response, negotiation), the generator emits a **generation-time error** by default: `ERROR: HTTP auth scheme "digest" requires challenge-response negotiation that cannot be implemented as a simple middleware. Use --unsupported-auth=stub to generate a placeholder stub instead.` This prevents users from accidentally deploying non-functional authentication code. With `--unsupported-auth=stub`, the generator emits a warning and generates a stub middleware with a clear doc comment:
 
 ```go
 // Generated for: type: http, scheme: digest
-// WithDigestAuth returns middleware for HTTP Digest authentication.
-// NOTE: Digest authentication requires challenge-response negotiation.
-// This middleware sets the initial Authorization header; for full digest
-// flow, use a custom http.RoundTripper or middleware instead.
+// WARNING: Digest authentication requires challenge-response negotiation that
+// cannot be implemented as a simple header-setting middleware. This stub sets
+// the initial Authorization header only and is NOT sufficient for production use.
+// Replace this with a proper http.RoundTripper implementation for digest auth.
+//
+// Recommended: use a digest-auth library (e.g., github.com/icholy/digest) wrapped
+// as an http.RoundTripper, and pass it via openapigo.WithHTTPClient().
 func WithDigestAuth(credentials string) openapigo.Middleware {
     return openapigo.MiddlewareFunc(func(req *http.Request, next func(*http.Request) (*http.Response, error)) (*http.Response, error) {
         req.Header.Set("Authorization", "Digest "+credentials)
@@ -144,7 +147,7 @@ func WithDigestAuth(credentials string) openapigo.Middleware {
 }
 ```
 
-For complex authentication flows (digest challenge-response, negotiate/SPNEGO), the generated middleware provides only the initial header. A doc comment recommends using a specialized `http.RoundTripper` for the full protocol.
+The generation-time warning: `WARN: HTTP auth scheme "digest" requires challenge-response negotiation. Generated middleware is a stub only — replace with a proper implementation for production use.` This ensures users are aware that the generated code is insufficient for schemes like `digest`, `negotiate`, and `mutual` that involve multi-step authentication flows. For simple token-in-header schemes (e.g., `vapid`), the generated middleware may be sufficient.
 
 ### API Key Variants
 
@@ -312,6 +315,8 @@ security:
     queryAuth: []
 ```
 
+**Transport conflict detection**: When an AND requirement contains multiple schemes that inject credentials into the **same key** (e.g., two schemes both setting the `Authorization` header, or two apiKey schemes both using the same query parameter name), the generator emits a **generation-time error**: `ERROR: AND security requirement contains schemes "bearerAuth" and "digestAuth" that both set the "Authorization" header. These cannot be satisfied simultaneously. Fix the spec or use different injection keys.` This prevents generating code that would silently produce authentication failures at runtime due to value overwrites. **Granularity**: The conflict check is at the injection **key** level, not the transport **location** level. Multiple schemes using the same transport location (e.g., headers) with **different** keys (e.g., `Authorization` vs `X-API-Key`) are valid and do not trigger an error — this is a common AND pattern. Examples: `apiKey(header: X-API-Key-1)` + `apiKey(header: X-API-Key-2)` is valid (different header names); `http/bearer` + `http/basic` is invalid (both set `Authorization`).
+
 Since auth is middleware-based, users compose as needed:
 
 ```go
@@ -336,7 +341,7 @@ We generate doc comments on the client indicating which schemes are required:
 // Security (one of):
 //   - bearerAuth (http/bearer)
 //   - apiKey (header: X-API-Key)
-var GetAdminData = openapigo.Endpoint[...]{...}
+var GetAdminData = openapigo.NewEndpoint[...](...)
 ```
 
 ### Per-Operation Security Override
@@ -346,11 +351,11 @@ When an operation overrides the global security, we generate a doc comment on th
 ```go
 // ListPublicPets does not require authentication.
 // Security: none
-var ListPublicPets = openapigo.Endpoint[...]{...}
+var ListPublicPets = openapigo.NewEndpoint[...](...)
 
 // DeletePet requires admin authentication.
 // Security: oauth2 (scopes: admin)
-var DeletePet = openapigo.Endpoint[...]{...}
+var DeletePet = openapigo.NewEndpoint[...](...)
 ```
 
 We do **not** enforce security requirements at runtime — the middleware approach means the user is responsible for configuring auth. This is consistent with the thin wrapper philosophy.
