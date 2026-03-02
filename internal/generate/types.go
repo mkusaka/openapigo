@@ -47,13 +47,13 @@ func (g *Generator) goTypeInner(s *spec.Schema, name string) string {
 		elemType := g.GoType(s.Items, name+"Item")
 		return "[]" + elemType
 	case "object":
-		if len(s.Properties) == 0 && s.AdditionalProperties == nil {
+		// No properties → map type.
+		if len(s.Properties) == 0 {
+			if s.AdditionalProperties != nil && s.AdditionalProperties.Schema != nil {
+				valType := g.GoType(s.AdditionalProperties.Schema, name+"Value")
+				return "map[string]" + valType
+			}
 			return "map[string]any"
-		}
-		// Typed additionalProperties without properties → map.
-		if len(s.Properties) == 0 && s.AdditionalProperties != nil && s.AdditionalProperties.Schema != nil {
-			valType := g.GoType(s.AdditionalProperties.Schema, name+"Value")
-			return "map[string]" + valType
 		}
 		// Object with properties → needs a named struct.
 		// If we don't have a name, it's an inline schema that needs to be registered.
