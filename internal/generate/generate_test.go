@@ -29,6 +29,7 @@ func TestGenerateAndCompile(t *testing.T) {
 		spec string
 	}{
 		{"basic-crud", filepath.Join(root, "testdata", "cases", "basic-crud", "spec.json")},
+		{"composition", filepath.Join(root, "testdata", "cases", "composition", "spec.json")},
 	}
 
 	for _, tt := range tests {

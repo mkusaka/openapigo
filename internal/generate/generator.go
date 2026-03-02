@@ -360,6 +360,17 @@ func (g *Generator) emitSchemaType(w *strings.Builder, goName string, s *spec.Sc
 	}
 	s = s.Resolved()
 
+	// allOf composition.
+	if len(s.AllOf) > 0 {
+		g.emitAllOfType(w, goName, s)
+		return
+	}
+
+	// oneOf/anyOf — resolves to "any", no named type to emit.
+	if len(s.OneOf) > 0 || len(s.AnyOf) > 0 {
+		return
+	}
+
 	// Enum type.
 	if len(s.Enum) > 0 && s.Type == "string" {
 		emitEnumType(w, goName, s)
@@ -383,6 +394,49 @@ func (g *Generator) emitSchemaType(w *strings.Builder, goName string, s *spec.Sc
 	goType := g.goTypeInner(s, goName)
 	if goType != "any" {
 		fmt.Fprintf(w, "// %s is a type alias.\ntype %s = %s\n\n", goName, goName, goType)
+	}
+}
+
+// emitAllOfType handles allOf composition schemas.
+func (g *Generator) emitAllOfType(w *strings.Builder, goName string, s *spec.Schema) {
+	resolved := make([]*spec.Schema, 0, len(s.AllOf))
+	for _, sub := range s.AllOf {
+		if sub != nil {
+			resolved = append(resolved, sub.Resolved())
+		}
+	}
+	if len(resolved) == 0 {
+		return
+	}
+
+	// Check if any sub-schemas have properties (object-like).
+	hasObject := false
+	for _, sub := range resolved {
+		if sub.Type == "object" || len(sub.Properties) > 0 {
+			hasObject = true
+			break
+		}
+	}
+
+	if hasObject {
+		// Merge all properties and emit struct.
+		merged := g.mergeAllOfProperties(resolved)
+		g.emitStructType(w, goName, merged)
+		return
+	}
+
+	// All primitives of the same type → type alias.
+	if resolved[0].Type != "" {
+		best := resolved[0]
+		for _, sub := range resolved[1:] {
+			if sub.Format != "" && best.Format == "" {
+				best = sub
+			}
+		}
+		goType := g.goTypeInner(best, goName)
+		if goType != "any" {
+			fmt.Fprintf(w, "// %s is a type alias.\ntype %s = %s\n\n", goName, goName, goType)
+		}
 	}
 }
 

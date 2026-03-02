@@ -27,9 +27,10 @@ func (g *Generator) GoType(s *spec.Schema, name string) string {
 
 func (g *Generator) goTypeInner(s *spec.Schema, name string) string {
 	// Handle composition.
-	if len(s.AllOf) > 0 || len(s.OneOf) > 0 || len(s.AnyOf) > 0 {
-		// For now, composition is handled in M5.
-		// Return "any" as placeholder.
+	if len(s.AllOf) > 0 {
+		return g.allOfType(s, name)
+	}
+	if len(s.OneOf) > 0 || len(s.AnyOf) > 0 {
 		return "any"
 	}
 
@@ -234,6 +235,83 @@ func (g *Generator) emitStructType(w *strings.Builder, typeName string, s *spec.
 	}
 
 	fmt.Fprintf(w, "}\n\n")
+}
+
+// allOfType resolves allOf composition to a Go type.
+// - Same-type primitives: use that primitive type (e.g., allOf: [int64, int64(min=0)] → int64)
+// - Object merges: merge properties into a single struct
+// - Mixed/complex: fall back to any
+func (g *Generator) allOfType(s *spec.Schema, name string) string {
+	resolved := make([]*spec.Schema, 0, len(s.AllOf))
+	for _, sub := range s.AllOf {
+		if sub != nil {
+			resolved = append(resolved, sub.Resolved())
+		}
+	}
+	if len(resolved) == 0 {
+		return "any"
+	}
+
+	// Check if all schemas are the same primitive type.
+	if resolved[0].Type != "" && resolved[0].Type != "object" {
+		allSame := true
+		for _, sub := range resolved[1:] {
+			if sub.Type != resolved[0].Type {
+				allSame = false
+				break
+			}
+		}
+		if allSame {
+			// Use the first schema (pick most specific format if available).
+			best := resolved[0]
+			for _, sub := range resolved[1:] {
+				if sub.Format != "" && best.Format == "" {
+					best = sub
+				}
+			}
+			return g.goTypeInner(best, name)
+		}
+	}
+
+	// Check if any schemas have properties (object-like) — merge properties.
+	hasProps := false
+	for _, sub := range resolved {
+		if len(sub.Properties) > 0 || sub.Type == "object" {
+			hasProps = true
+			break
+		}
+	}
+	if hasProps {
+		merged := g.mergeAllOfProperties(resolved)
+		if name != "" {
+			goName := ToPascalCase(name)
+			if _, exists := g.schemaNames[s]; !exists {
+				g.schemaNames[s] = goName
+				g.inlineSchemas = append(g.inlineSchemas, namedSchema{name: goName, schema: merged})
+			}
+			return goName
+		}
+	}
+
+	return "any"
+}
+
+// mergeAllOfProperties merges properties from all allOf sub-schemas into a single schema.
+func (g *Generator) mergeAllOfProperties(schemas []*spec.Schema) *spec.Schema {
+	merged := &spec.Schema{
+		Type:       "object",
+		Properties: make(map[string]*spec.Schema),
+	}
+	for _, sub := range schemas {
+		for propName, prop := range sub.Properties {
+			if _, exists := merged.Properties[propName]; !exists {
+				merged.Properties[propName] = prop
+				merged.PropertyOrder = append(merged.PropertyOrder, propName)
+			}
+		}
+		merged.Required = append(merged.Required, sub.Required...)
+	}
+	return merged
 }
 
 // namedSchema pairs a Go name with its schema for deferred emission.
