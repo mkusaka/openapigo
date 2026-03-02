@@ -120,7 +120,10 @@ func doInternal[Req, Resp any](ctx context.Context, client *Client, endpoint End
 	}
 	defer httpResp.Body.Close()
 
-	body, err := io.ReadAll(httpResp.Body)
+	// Limit response body to prevent OOM from malicious/large responses.
+	// Default: 64 MiB. Can be increased via custom middleware if needed.
+	const maxResponseBody = 64 << 20
+	body, err := io.ReadAll(io.LimitReader(httpResp.Body, maxResponseBody))
 	if err != nil {
 		return nil, httpResp, err
 	}

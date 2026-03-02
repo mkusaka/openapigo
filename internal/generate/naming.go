@@ -139,10 +139,23 @@ func ToFieldName(name string) string {
 }
 
 // sanitizeComment removes or replaces characters that could break Go comments.
-// Newlines are replaced with " // " to keep each line as a valid comment.
+// Newlines are replaced with spaces to prevent code injection via spec strings.
 func sanitizeComment(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", " ")
 	s = strings.ReplaceAll(s, "\r", " ")
 	s = strings.ReplaceAll(s, "\n", " ")
 	return s
+}
+
+// sanitizeIdentifier strips any characters that are not valid in a Go identifier.
+// This prevents code injection via malicious spec strings (e.g., x-go-name containing newlines).
+func sanitizeIdentifier(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }

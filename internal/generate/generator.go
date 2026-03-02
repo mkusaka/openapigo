@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 
@@ -429,7 +428,8 @@ func (g *Generator) emitOperation(w *strings.Builder, imports map[string]bool, p
 	opName := g.opNameFor(op)
 
 	// Collect all parameters (path-level + operation-level).
-	allParams := append(slices.Clone(pathParams), op.Parameters...)
+	// Per OAS spec, operation-level params override path-level params with same name+in.
+	allParams := mergeParams(pathParams, op.Parameters)
 
 	hasParams := len(allParams) > 0
 	hasBody := op.RequestBody != nil && op.RequestBody.RequestBody != nil
@@ -529,6 +529,31 @@ func (g *Generator) responseSchema(resp *spec.Response) *spec.Schema {
 	return mt.Schema
 }
 
+// mergeParams merges path-level and operation-level parameters.
+// Per the OAS spec, operation-level parameters override path-level parameters
+// with the same name and location (in).
+func mergeParams(pathParams, opParams []*spec.ParameterOrRef) []*spec.ParameterOrRef {
+	// Build a set of operation-level param keys (name + in).
+	opKeys := make(map[string]bool)
+	for _, p := range opParams {
+		if p != nil && p.Parameter != nil {
+			opKeys[p.Parameter.Name+"|"+p.Parameter.In] = true
+		}
+	}
+	// Start with path-level params, skip those overridden by operation-level.
+	var merged []*spec.ParameterOrRef
+	for _, p := range pathParams {
+		if p != nil && p.Parameter != nil {
+			if opKeys[p.Parameter.Name+"|"+p.Parameter.In] {
+				continue // overridden by operation-level param
+			}
+		}
+		merged = append(merged, p)
+	}
+	merged = append(merged, opParams...)
+	return merged
+}
+
 func (g *Generator) collectImports(imports map[string]bool, s *spec.Schema) {
 	if s == nil {
 		return
@@ -602,7 +627,7 @@ func (g *Generator) emitEndpoint(w *strings.Builder, imports map[string]bool, pa
 	opName := g.opNameFor(op)
 
 	// Determine request type.
-	allParams := append(slices.Clone(pathParams), op.Parameters...)
+	allParams := mergeParams(pathParams, op.Parameters)
 	hasParams := len(allParams) > 0
 	hasBody := op.RequestBody != nil && op.RequestBody.RequestBody != nil
 	reqType := "openapigo.NoRequest"

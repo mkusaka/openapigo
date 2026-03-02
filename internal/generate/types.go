@@ -215,7 +215,7 @@ func (g *Generator) emitStructType(w *strings.Builder, typeName string, s *spec.
 		if v, ok := prop.Resolved().Extensions["x-go-name"]; ok {
 			var goName string
 			if json.Unmarshal(v, &goName) == nil && goName != "" {
-				fieldName = goName
+				fieldName = sanitizeIdentifier(goName)
 			}
 		}
 		fieldNames[fieldName]++
@@ -234,7 +234,7 @@ func (g *Generator) emitStructType(w *strings.Builder, typeName string, s *spec.
 		if v, ok := resolved.Extensions["x-go-name"]; ok {
 			var goName string
 			if json.Unmarshal(v, &goName) == nil && goName != "" {
-				fieldName = goName
+				fieldName = sanitizeIdentifier(goName)
 			}
 		}
 
