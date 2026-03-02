@@ -137,3 +137,12 @@ func ToFieldName(name string) string {
 	}
 	return SafeName(result)
 }
+
+// sanitizeComment removes or replaces characters that could break Go comments.
+// Newlines are replaced with " // " to keep each line as a valid comment.
+func sanitizeComment(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return s
+}

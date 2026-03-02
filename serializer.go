@@ -29,6 +29,9 @@ func parseStructMeta(t reflect.Type) *structMeta {
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}
+	if t.Kind() != reflect.Struct {
+		return &structMeta{}
+	}
 	if cached, ok := metaCache.Load(t); ok {
 		return cached.(*structMeta)
 	}

@@ -18,8 +18,14 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
+	// Do not include the full body in the error string to avoid leaking
+	// sensitive information into logs. Show only a truncated preview.
 	if len(e.Body) > 0 {
-		return fmt.Sprintf("API error %s: %s", e.Status, e.Body)
+		preview := e.Body
+		if len(preview) > 128 {
+			preview = preview[:128]
+		}
+		return fmt.Sprintf("API error %s: %s...", e.Status, preview)
 	}
 	return fmt.Sprintf("API error %s", e.Status)
 }

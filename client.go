@@ -54,8 +54,13 @@ func WithBaseURL(u string) Option {
 
 // WithHTTPClient sets the underlying http.Client.
 // The caller must not modify the http.Client after passing it here.
+// Passing nil is a no-op (the default http.DefaultClient is retained).
 func WithHTTPClient(hc *http.Client) Option {
-	return func(c *Client) { c.httpClient = hc }
+	return func(c *Client) {
+		if hc != nil {
+			c.httpClient = hc
+		}
+	}
 }
 
 // WithDefaultHeader adds a default header sent on every request.
@@ -70,8 +75,13 @@ func WithMiddleware(mw ...Middleware) Option {
 }
 
 // WithJSONCodec sets a custom JSON encoder/decoder.
+// Passing nil is a no-op (the default codec is retained).
 func WithJSONCodec(codec JSONCodec) Option {
-	return func(c *Client) { c.codec = codec }
+	return func(c *Client) {
+		if codec != nil {
+			c.codec = codec
+		}
+	}
 }
 
 // Do executes an API request described by the endpoint and request value,

@@ -130,16 +130,15 @@ func (g *Generator) parseExtensions() {
 		return
 	}
 
-	for name, schemaData := range raw.Components.Schemas {
-		s, ok := g.doc.Components.Schemas[name]
-		if !ok || s == nil {
-			continue
+	if g.doc.Components != nil {
+		for name, schemaData := range raw.Components.Schemas {
+			s, ok := g.doc.Components.Schemas[name]
+			if !ok || s == nil {
+				continue
+			}
+			parseSchemaExtensions(s, schemaData)
 		}
-		parseSchemaExtensions(s, schemaData)
 	}
-
-	// Also parse inline schemas in paths.
-	g.parsePathExtensions(data)
 }
 
 func parseSchemaExtensions(s *spec.Schema, data json.RawMessage) {
@@ -201,89 +200,6 @@ func parseSchemaExtensions(s *spec.Schema, data json.RawMessage) {
 	}
 }
 
-func (g *Generator) parsePathExtensions(data []byte) {
-	var raw struct {
-		Paths map[string]json.RawMessage `json:"paths"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return
-	}
-	for _, pathData := range raw.Paths {
-		g.parsePathItemExtensions(pathData)
-	}
-}
-
-func (g *Generator) parsePathItemExtensions(data json.RawMessage) {
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return
-	}
-	for _, method := range []string{"get", "post", "put", "patch", "delete"} {
-		opData, ok := raw[method]
-		if !ok {
-			continue
-		}
-		g.parseOperationExtensions(opData)
-	}
-}
-
-func (g *Generator) parseOperationExtensions(data json.RawMessage) {
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return
-	}
-	// Parse requestBody inline schemas.
-	if rbData, ok := raw["requestBody"]; ok {
-		var rb map[string]json.RawMessage
-		if err := json.Unmarshal(rbData, &rb); err == nil {
-			if contentData, ok := rb["content"]; ok {
-				var content map[string]json.RawMessage
-				if err := json.Unmarshal(contentData, &content); err == nil {
-					for _, mtData := range content {
-						var mt map[string]json.RawMessage
-						if err := json.Unmarshal(mtData, &mt); err == nil {
-							if schemaData, ok := mt["schema"]; ok {
-								g.parseInlineSchemaExtensions(schemaData)
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-	// Parse response inline schemas.
-	if respData, ok := raw["responses"]; ok {
-		var responses map[string]json.RawMessage
-		if err := json.Unmarshal(respData, &responses); err == nil {
-			for _, rData := range responses {
-				var resp map[string]json.RawMessage
-				if err := json.Unmarshal(rData, &resp); err == nil {
-					if contentData, ok := resp["content"]; ok {
-						var content map[string]json.RawMessage
-						if err := json.Unmarshal(contentData, &content); err == nil {
-							for _, mtData := range content {
-								var mt map[string]json.RawMessage
-								if err := json.Unmarshal(mtData, &mt); err == nil {
-									if schemaData, ok := mt["schema"]; ok {
-										g.parseInlineSchemaExtensions(schemaData)
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-}
-
-func (g *Generator) parseInlineSchemaExtensions(data json.RawMessage) {
-	// This is for inline schemas in operations.
-	// We can't easily match them to our spec.Schema objects here,
-	// so this is a best-effort approach.
-	// The main extension parsing happens through component schemas.
-}
-
 // uniqueName returns a unique Go type name, adding numeric suffix on collision.
 func (g *Generator) uniqueName(name string) string {
 	name = SafeName(name)
@@ -311,11 +227,14 @@ func (g *Generator) generateTypes(source string) string {
 	typeDefs.WriteString("// Ensures generated code is compatible with the runtime library.\nvar _ = openapigo.RuntimeCompatV0_1\n\n")
 
 	// Sort component schemas by name.
-	names := make([]string, 0, len(g.doc.Components.Schemas))
-	for name := range g.doc.Components.Schemas {
-		names = append(names, name)
+	var names []string
+	if g.doc.Components != nil {
+		names = make([]string, 0, len(g.doc.Components.Schemas))
+		for name := range g.doc.Components.Schemas {
+			names = append(names, name)
+		}
+		sort.Strings(names)
 	}
-	sort.Strings(names)
 
 	// Emit component schemas.
 	for _, name := range names {
@@ -326,8 +245,10 @@ func (g *Generator) generateTypes(source string) string {
 
 	// Emit inline schemas that were discovered during type generation.
 	emitted := make(map[string]bool)
-	for _, ns := range names {
-		emitted[g.schemaNames[g.doc.Components.Schemas[ns]]] = true
+	if g.doc.Components != nil {
+		for _, ns := range names {
+			emitted[g.schemaNames[g.doc.Components.Schemas[ns]]] = true
+		}
 	}
 	// Process inline schemas iteratively (they may generate more inline schemas).
 	for i := 0; i < len(g.inlineSchemas); i++ {
@@ -710,7 +631,7 @@ func (g *Generator) emitEndpoint(w *strings.Builder, imports map[string]bool, pa
 
 	fmt.Fprintf(w, "// %s is the endpoint for %s %s.\n", opName, method, path)
 	if op.Summary != "" {
-		fmt.Fprintf(w, "// %s\n", op.Summary)
+		fmt.Fprintf(w, "// %s\n", sanitizeComment(op.Summary))
 	}
 	if op.Deprecated {
 		fmt.Fprintf(w, "//\n// Deprecated: this operation is deprecated.\n")

@@ -1,6 +1,7 @@
 package spec
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -82,7 +83,7 @@ func extractJSONKeyOrder(data []byte, field string) []string {
 }
 
 func orderedKeysFromJSON(data json.RawMessage) []string {
-	dec := json.NewDecoder(strings.NewReader(string(data)))
+	dec := json.NewDecoder(bytes.NewReader(data))
 	t, err := dec.Token()
 	if err != nil || t != json.Delim('{') {
 		return nil
