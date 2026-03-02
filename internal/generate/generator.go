@@ -63,11 +63,13 @@ func Run(cfg Config) error {
 	g.parseExtensions()
 
 	// 5. Generate files.
+	// Operations and endpoints are generated first so that inline schemas
+	// (e.g., request body types) are discovered before types.go is emitted.
 	source := filepath.Base(cfg.Input)
 
-	typesCode := g.generateTypes(source)
 	opsCode := g.generateOperations(source)
 	endpointsCode := g.generateEndpoints(source)
+	typesCode := g.generateTypes(source)
 
 	// 6. Write files.
 	for name, code := range map[string]string{
@@ -366,8 +368,9 @@ func (g *Generator) emitSchemaType(w *strings.Builder, goName string, s *spec.Sc
 		return
 	}
 
-	// oneOf/anyOf — resolves to "any", no named type to emit.
+	// oneOf/anyOf — emit type alias to any.
 	if len(s.OneOf) > 0 || len(s.AnyOf) > 0 {
+		fmt.Fprintf(w, "// %s is a union type (oneOf/anyOf).\ntype %s = any\n\n", goName, goName)
 		return
 	}
 
@@ -487,13 +490,22 @@ func (g *Generator) generateOperations(source string) string {
 	return w.String()
 }
 
+// opNameFor returns the Go name for an operation, avoiding collisions with schema names.
+func (g *Generator) opNameFor(op *spec.Operation) string {
+	opName := ToPascalCase(op.OperationID)
+	if _, collision := g.usedNames[opName]; collision {
+		opName += "Op"
+	}
+	return opName
+}
+
 // emitOperation writes request/response structs for an operation.
 func (g *Generator) emitOperation(w *strings.Builder, imports map[string]bool, path, method string, op *spec.Operation, pathParams []*spec.ParameterOrRef) {
 	if op == nil || op.OperationID == "" {
 		return
 	}
 
-	opName := ToPascalCase(op.OperationID)
+	opName := g.opNameFor(op)
 
 	// Collect all parameters (path-level + operation-level).
 	allParams := append(slices.Clone(pathParams), op.Parameters...)
@@ -666,7 +678,7 @@ func (g *Generator) emitEndpoint(w *strings.Builder, imports map[string]bool, pa
 		return
 	}
 
-	opName := ToPascalCase(op.OperationID)
+	opName := g.opNameFor(op)
 
 	// Determine request type.
 	allParams := append(slices.Clone(pathParams), op.Parameters...)

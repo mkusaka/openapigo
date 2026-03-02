@@ -204,6 +204,24 @@ func (g *Generator) emitStructType(w *strings.Builder, typeName string, s *spec.
 		slices.Sort(propOrder)
 	}
 
+	// Pre-compute field names to detect collisions.
+	fieldNames := make(map[string]int) // field name → count
+	for _, propName := range propOrder {
+		prop := s.Properties[propName]
+		if prop == nil {
+			continue
+		}
+		fieldName := ToFieldName(propName)
+		if v, ok := prop.Resolved().Extensions["x-go-name"]; ok {
+			var goName string
+			if json.Unmarshal(v, &goName) == nil && goName != "" {
+				fieldName = goName
+			}
+		}
+		fieldNames[fieldName]++
+	}
+
+	usedFields := make(map[string]int)
 	for _, propName := range propOrder {
 		prop := s.Properties[propName]
 		if prop == nil {
@@ -217,6 +235,14 @@ func (g *Generator) emitStructType(w *strings.Builder, typeName string, s *spec.
 			var goName string
 			if json.Unmarshal(v, &goName) == nil && goName != "" {
 				fieldName = goName
+			}
+		}
+
+		// Resolve field name collision by appending a numeric suffix.
+		if fieldNames[fieldName] > 1 {
+			usedFields[fieldName]++
+			if usedFields[fieldName] > 1 {
+				fieldName = fmt.Sprintf("%s%d", fieldName, usedFields[fieldName])
 			}
 		}
 
