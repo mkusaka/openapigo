@@ -466,6 +466,12 @@ func (g *Generator) emitOperation(w *strings.Builder, imports map[string]bool, p
 				// Disambiguate by appending location suffix (e.g., IDQuery, IDPath).
 				fieldName = ToFieldName(param.Name) + ToPascalCase(paramIn)
 			}
+			// If still colliding (e.g., "id_query" query + "id" query both → IDQuery),
+			// append a numeric suffix.
+			base := fieldName
+			for n := 2; usedFieldNames[fieldName]; n++ {
+				fieldName = fmt.Sprintf("%s%d", base, n)
+			}
 			usedFieldNames[fieldName] = true
 			goType := "string"
 			if param.Schema != nil {
@@ -537,7 +543,7 @@ func (g *Generator) requestBodySchema(rb *spec.RequestBody) *spec.Schema {
 }
 
 func (g *Generator) findSuccessResponseSchema(op *spec.Operation) *spec.Schema {
-	// Check all 2xx status codes, preferring lower codes.
+	// Check all numeric 2xx status codes first, preferring lower codes.
 	var codes []string
 	for code := range op.Responses {
 		if len(code) == 3 && code[0] == '2' && code[1] >= '0' && code[1] <= '9' && code[2] >= '0' && code[2] <= '9' {
@@ -549,6 +555,10 @@ func (g *Generator) findSuccessResponseSchema(op *spec.Operation) *spec.Schema {
 		if s := g.responseSchema(op.Responses[code].Response); s != nil {
 			return s
 		}
+	}
+	// Fall back to 2XX wildcard.
+	if resp, ok := op.Responses["2XX"]; ok {
+		return g.responseSchema(resp.Response)
 	}
 	return nil
 }
@@ -677,14 +687,21 @@ func (g *Generator) emitEndpoint(w *strings.Builder, imports map[string]bool, pa
 		respType = g.GoType(successSchema.Resolved(), opName+"Response")
 	}
 
-	// Find success codes (numeric only; skip wildcards like "2XX").
+	// Find success codes. Numeric codes are emitted directly; "2XX" wildcard
+	// is emitted as -2 (range code, matching 200-299 in the runtime).
 	var successCodes []string
+	has2XX := false
 	for code := range op.Responses {
 		if len(code) == 3 && code[0] == '2' && code[1] >= '0' && code[1] <= '9' && code[2] >= '0' && code[2] <= '9' {
 			successCodes = append(successCodes, code)
+		} else if code == "2XX" {
+			has2XX = true
 		}
 	}
 	sort.Strings(successCodes)
+	if has2XX {
+		successCodes = append(successCodes, "-2") // range code for 2XX
+	}
 	if len(successCodes) == 0 {
 		successCodes = []string{"200"}
 	}

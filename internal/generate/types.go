@@ -253,7 +253,7 @@ func (g *Generator) emitStructType(w *strings.Builder, typeName string, s *spec.
 
 		// JSON tag (sanitize to prevent struct tag injection).
 		tag := sanitizeTagValue(propName)
-		if !req && !nullable {
+		if !req {
 			tag += ",omitzero"
 		}
 

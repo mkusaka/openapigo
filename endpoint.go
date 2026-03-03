@@ -40,9 +40,14 @@ func (e Endpoint[Req, Resp]) Method() string { return e.method }
 func (e Endpoint[Req, Resp]) Path() string { return e.path }
 
 // isSuccessStatus reports whether the status code is a success code for this endpoint.
+// Negative values represent range codes: -2 means 2XX (200-299).
 func (e Endpoint[Req, Resp]) isSuccessStatus(code int) bool {
 	for _, c := range e.successCodes {
 		if c == code {
+			return true
+		}
+		// Negative value = range code (e.g., -2 matches 200-299).
+		if c < 0 && code/100 == -c {
 			return true
 		}
 	}

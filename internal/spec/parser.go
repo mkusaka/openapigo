@@ -328,34 +328,43 @@ func yamlNodeToJSON(node *yaml.Node) ([]byte, error) {
 }
 
 // yamlNodeToInterface converts a yaml.Node to a Go interface{} suitable for json.Marshal.
+// The visited set tracks alias nodes to prevent infinite recursion from cyclic YAML anchors.
 func yamlNodeToInterface(node *yaml.Node) any {
+	return yamlNodeToInterfaceImpl(node, make(map[*yaml.Node]bool))
+}
+
+func yamlNodeToInterfaceImpl(node *yaml.Node, visited map[*yaml.Node]bool) any {
 	if node == nil {
 		return nil
 	}
 	switch node.Kind {
 	case yaml.DocumentNode:
 		if len(node.Content) > 0 {
-			return yamlNodeToInterface(node.Content[0])
+			return yamlNodeToInterfaceImpl(node.Content[0], visited)
 		}
 		return nil
 	case yaml.MappingNode:
 		m := make(map[string]any, len(node.Content)/2)
 		for i := 0; i+1 < len(node.Content); i += 2 {
 			key := node.Content[i].Value
-			val := yamlNodeToInterface(node.Content[i+1])
+			val := yamlNodeToInterfaceImpl(node.Content[i+1], visited)
 			m[key] = val
 		}
 		return m
 	case yaml.SequenceNode:
 		s := make([]any, len(node.Content))
 		for i, child := range node.Content {
-			s[i] = yamlNodeToInterface(child)
+			s[i] = yamlNodeToInterfaceImpl(child, visited)
 		}
 		return s
 	case yaml.ScalarNode:
 		return yamlScalarToInterface(node)
 	case yaml.AliasNode:
-		return yamlNodeToInterface(node.Alias)
+		if visited[node] {
+			return nil // break cycle
+		}
+		visited[node] = true
+		return yamlNodeToInterfaceImpl(node.Alias, visited)
 	default:
 		return nil
 	}
@@ -367,7 +376,11 @@ func yamlScalarToInterface(node *yaml.Node) any {
 	case "!!null":
 		return nil
 	case "!!bool":
-		return node.Value == "true"
+		var b bool
+		if err := node.Decode(&b); err == nil {
+			return b
+		}
+		return false
 	case "!!int":
 		var i int64
 		if err := node.Decode(&i); err == nil {
