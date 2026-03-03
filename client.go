@@ -179,6 +179,10 @@ func buildRequest[Req any](ctx context.Context, client *Client, method, pathTmpl
 	// 4. Create HTTP request.
 	httpReq, err := http.NewRequestWithContext(ctx, method, u.String(), bodyReader)
 	if err != nil {
+		// Close bodyReader to prevent goroutine leak (e.g., multipart io.Pipe writer).
+		if closer, ok := bodyReader.(io.Closer); ok {
+			closer.Close()
+		}
 		return nil, err
 	}
 
@@ -258,43 +262,51 @@ func encodeBinaryBody(fv reflect.Value) (io.Reader, string, error) {
 	return nil, "", fmt.Errorf("binary body must be []byte or io.Reader, got %T", iface)
 }
 
-// encodeFormURLEncoded encodes a struct as application/x-www-form-urlencoded.
-// Fields tagged with json:"name" become form values; json:"-" fields are skipped.
+// encodeFormURLEncoded encodes a struct or map as application/x-www-form-urlencoded.
+// For structs, fields tagged with json:"name" become form values; json:"-" fields are skipped.
+// For maps (from additionalProperties schemas), keys are used as form field names.
 func encodeFormURLEncoded(fv reflect.Value) (io.Reader, string, error) {
 	if fv.Kind() == reflect.Ptr {
 		fv = fv.Elem()
 	}
-	if fv.Kind() != reflect.Struct {
-		return nil, "", fmt.Errorf("form body must be a struct, got %s", fv.Kind())
-	}
 	vals := url.Values{}
-	t := fv.Type()
-	for i := range t.NumField() {
-		field := t.Field(i)
-		if !field.IsExported() {
-			continue
+	switch fv.Kind() {
+	case reflect.Map:
+		iter := fv.MapRange()
+		for iter.Next() {
+			vals.Set(fmt.Sprintf("%v", iter.Key().Interface()), fmt.Sprintf("%v", iter.Value().Interface()))
 		}
-		fieldVal := fv.Field(i)
-		if isNilValue(fieldVal) {
-			continue
-		}
-		name := field.Tag.Get("json")
-		if name == "-" {
-			continue
-		}
-		if name == "" {
-			name = field.Name
-		}
-		if idx := strings.IndexByte(name, ','); idx != -1 {
-			name = name[:idx]
-		}
-		if fieldVal.Kind() == reflect.Ptr {
-			if fieldVal.IsNil() {
+	case reflect.Struct:
+		t := fv.Type()
+		for i := range t.NumField() {
+			field := t.Field(i)
+			if !field.IsExported() {
 				continue
 			}
-			fieldVal = fieldVal.Elem()
+			fieldVal := fv.Field(i)
+			if isNilValue(fieldVal) {
+				continue
+			}
+			name := field.Tag.Get("json")
+			if name == "-" {
+				continue
+			}
+			if name == "" {
+				name = field.Name
+			}
+			if idx := strings.IndexByte(name, ','); idx != -1 {
+				name = name[:idx]
+			}
+			if fieldVal.Kind() == reflect.Ptr {
+				if fieldVal.IsNil() {
+					continue
+				}
+				fieldVal = fieldVal.Elem()
+			}
+			vals.Set(name, fmt.Sprintf("%v", fieldVal.Interface()))
 		}
-		vals.Set(name, fmt.Sprintf("%v", fieldVal.Interface()))
+	default:
+		return nil, "", fmt.Errorf("form body must be a struct or map, got %s", fv.Kind())
 	}
 	return strings.NewReader(vals.Encode()), "application/x-www-form-urlencoded", nil
 }

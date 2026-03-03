@@ -39,7 +39,11 @@ func (g *Generator) generateAuth(source string) string {
 		if ss == nil {
 			continue
 		}
-		funcName := "With" + ToPascalCase(name) + "Auth"
+		pascal := ToPascalCase(name)
+		funcName := "With" + pascal
+		if !strings.HasSuffix(pascal, "Auth") {
+			funcName += "Auth"
+		}
 		usedFuncNames[funcName]++
 		if usedFuncNames[funcName] > 1 {
 			funcName = fmt.Sprintf("%s%d", funcName, usedFuncNames[funcName])

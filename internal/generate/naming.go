@@ -58,6 +58,10 @@ func ToPascalCase(s string) string {
 	result := b.String()
 	// Fix common acronyms: Id → ID, Url → URL, Api → API, etc.
 	result = fixAcronyms(result)
+	// Ensure result is a valid Go identifier (digit-leading is invalid).
+	if len(result) > 0 && unicode.IsDigit(rune(result[0])) {
+		result = "X" + result
+	}
 	return result
 }
 
@@ -184,6 +188,10 @@ func sanitizeIdentifier(s string) string {
 	// Ensure identifier starts with a letter or underscore (digit-leading is invalid Go).
 	if !unicode.IsLetter(rune(result[0])) && result[0] != '_' {
 		result = "X" + result
+	}
+	// Guard against Go keywords and predeclared identifiers.
+	if reserved[result] {
+		result = result + "_"
 	}
 	return result
 }
