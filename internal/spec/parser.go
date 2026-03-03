@@ -48,24 +48,29 @@ func parseJSON(data []byte) (*Document, error) {
 }
 
 func parseYAML(data []byte) (*Document, error) {
-	// First parse into yaml.Node to extract key ordering.
+	// Parse into yaml.Node to extract key ordering and convert to JSON.
 	var node yaml.Node
 	if err := yaml.Unmarshal(data, &node); err != nil {
 		return nil, fmt.Errorf("parse YAML spec: %w", err)
 	}
 
-	// Then unmarshal into our typed structure.
-	var doc Document
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("parse YAML spec: %w", err)
+	// Convert YAML to JSON, then use the JSON parser.
+	// This avoids issues with json.RawMessage not being directly
+	// deserializable from YAML scalars (e.g., enum values).
+	jsonData, err := yamlNodeToJSON(&node)
+	if err != nil {
+		return nil, fmt.Errorf("convert YAML to JSON: %w", err)
+	}
+	doc, err := parseJSON(jsonData)
+	if err != nil {
+		return nil, err
 	}
 
-	// Extract path order from YAML node.
+	// Also extract ordering from the YAML node tree (more reliable than JSON re-parse).
 	doc.PathOrder = extractYAMLKeyOrder(&node, "paths")
-	// Extract property order for schemas.
-	extractSchemaPropertyOrdersFromYAML(&doc, &node)
+	extractSchemaPropertyOrdersFromYAML(doc, &node)
 
-	return &doc, nil
+	return doc, nil
 }
 
 // extractJSONKeyOrder extracts the key order of a top-level object field.
@@ -304,6 +309,80 @@ func extractNestedYAMLPropertyOrders(s *Schema, node *yaml.Node) {
 				}
 			}
 		}
+	}
+}
+
+// YAMLToJSON converts YAML bytes to JSON bytes.
+func YAMLToJSON(data []byte) ([]byte, error) {
+	var node yaml.Node
+	if err := yaml.Unmarshal(data, &node); err != nil {
+		return nil, err
+	}
+	return yamlNodeToJSON(&node)
+}
+
+// yamlNodeToJSON converts a yaml.Node tree into JSON bytes.
+func yamlNodeToJSON(node *yaml.Node) ([]byte, error) {
+	v := yamlNodeToInterface(node)
+	return json.Marshal(v)
+}
+
+// yamlNodeToInterface converts a yaml.Node to a Go interface{} suitable for json.Marshal.
+func yamlNodeToInterface(node *yaml.Node) any {
+	if node == nil {
+		return nil
+	}
+	switch node.Kind {
+	case yaml.DocumentNode:
+		if len(node.Content) > 0 {
+			return yamlNodeToInterface(node.Content[0])
+		}
+		return nil
+	case yaml.MappingNode:
+		m := make(map[string]any, len(node.Content)/2)
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			key := node.Content[i].Value
+			val := yamlNodeToInterface(node.Content[i+1])
+			m[key] = val
+		}
+		return m
+	case yaml.SequenceNode:
+		s := make([]any, len(node.Content))
+		for i, child := range node.Content {
+			s[i] = yamlNodeToInterface(child)
+		}
+		return s
+	case yaml.ScalarNode:
+		return yamlScalarToInterface(node)
+	case yaml.AliasNode:
+		return yamlNodeToInterface(node.Alias)
+	default:
+		return nil
+	}
+}
+
+// yamlScalarToInterface converts a YAML scalar node to the appropriate Go type.
+func yamlScalarToInterface(node *yaml.Node) any {
+	switch node.Tag {
+	case "!!null":
+		return nil
+	case "!!bool":
+		return node.Value == "true"
+	case "!!int":
+		var i int64
+		if err := node.Decode(&i); err == nil {
+			return i
+		}
+		return node.Value
+	case "!!float":
+		var f float64
+		if err := node.Decode(&f); err == nil {
+			return f
+		}
+		return node.Value
+	default:
+		// !!str or untagged — return as string.
+		return node.Value
 	}
 }
 

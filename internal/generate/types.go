@@ -257,7 +257,15 @@ func (g *Generator) emitStructType(w *strings.Builder, typeName string, s *spec.
 			tag += ",omitzero"
 		}
 
-		fmt.Fprintf(w, "\t%s %s `json:\"%s\"`\n", fieldName, wrapped, tag)
+		// readOnly/writeOnly comment.
+		var rwComment string
+		if resolved.ReadOnly {
+			rwComment = " // read-only"
+		} else if resolved.WriteOnly {
+			rwComment = " // write-only"
+		}
+
+		fmt.Fprintf(w, "\t%s %s `json:\"%s\"`%s\n", fieldName, wrapped, tag, rwComment)
 	}
 
 	fmt.Fprintf(w, "}\n\n")
@@ -329,7 +337,19 @@ func (g *Generator) mergeAllOfProperties(schemas []*spec.Schema) *spec.Schema {
 		Properties: make(map[string]*spec.Schema),
 	}
 	for _, sub := range schemas {
-		for propName, prop := range sub.Properties {
+		// Use PropertyOrder if available; otherwise sort keys for determinism.
+		order := sub.PropertyOrder
+		if len(order) == 0 {
+			for name := range sub.Properties {
+				order = append(order, name)
+			}
+			slices.Sort(order)
+		}
+		for _, propName := range order {
+			prop, ok := sub.Properties[propName]
+			if !ok {
+				continue
+			}
 			if _, exists := merged.Properties[propName]; !exists {
 				merged.Properties[propName] = prop
 				merged.PropertyOrder = append(merged.PropertyOrder, propName)

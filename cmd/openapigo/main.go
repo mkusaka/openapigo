@@ -8,15 +8,48 @@ import (
 	"github.com/mkusaka/openapigo/internal/generate"
 )
 
+const usage = `Usage: openapigo <command> [options]
+
+Commands:
+  generate    Generate Go client code from an OpenAPI spec
+  version     Print the generator version
+
+Run 'openapigo <command> -h' for help on a specific command.
+`
+
 func main() {
+	if len(os.Args) < 2 {
+		fmt.Fprint(os.Stderr, usage)
+		os.Exit(1)
+	}
+
+	switch os.Args[1] {
+	case "generate":
+		runGenerate(os.Args[2:])
+	case "version":
+		fmt.Println("openapigo 0.1.0")
+	case "-h", "--help", "help":
+		fmt.Print(usage)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n%s", os.Args[1], usage)
+		os.Exit(1)
+	}
+}
+
+func runGenerate(args []string) {
+	fs := flag.NewFlagSet("generate", flag.ExitOnError)
 	var cfg generate.Config
-	flag.StringVar(&cfg.Input, "i", "", "path to OpenAPI spec file")
-	flag.StringVar(&cfg.Output, "o", "", "output directory for generated code")
-	flag.StringVar(&cfg.Package, "package", "", "Go package name (default: directory name)")
-	flag.Parse()
+	fs.StringVar(&cfg.Input, "i", "", "path to OpenAPI spec file")
+	fs.StringVar(&cfg.Output, "o", "", "output directory for generated code")
+	fs.StringVar(&cfg.Package, "package", "", "Go package name (default: directory name)")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Usage: openapigo generate -i <spec> -o <output> [-package <name>]")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
 
 	if cfg.Input == "" || cfg.Output == "" {
-		fmt.Fprintln(os.Stderr, "usage: openapigo generate -i <spec> -o <output> [--package <name>]")
+		fs.Usage()
 		os.Exit(1)
 	}
 
@@ -31,7 +64,6 @@ func main() {
 }
 
 func inferPackage(dir string) string {
-	// Use the last component of the output directory as the package name.
 	base := dir
 	for len(base) > 0 && base[len(base)-1] == '/' {
 		base = base[:len(base)-1]

@@ -69,13 +69,18 @@ func Run(cfg Config) error {
 	opsCode := g.generateOperations(source)
 	endpointsCode := g.generateEndpoints(source)
 	typesCode := g.generateTypes(source)
+	authCode := g.generateAuth(source)
 
 	// 6. Write files.
-	for name, code := range map[string]string{
+	files := map[string]string{
 		"types.go":      typesCode,
 		"operations.go": opsCode,
 		"endpoints.go":  endpointsCode,
-	} {
+	}
+	if authCode != "" {
+		files["auth.go"] = authCode
+	}
+	for name, code := range files {
 		path := filepath.Join(cfg.Output, name)
 		if err := writeFile(path, []byte(code)); err != nil {
 			return err
@@ -106,18 +111,20 @@ func (g *Generator) assignSchemaNames() {
 }
 
 // parseExtensions extracts vendor extensions from raw YAML/JSON into the Extensions map.
-// This is needed because gopkg.in/yaml.v3 doesn't automatically populate custom fields.
+// This is needed because the Extensions field is tagged json:"-" and not populated by
+// standard unmarshalling.
 func (g *Generator) parseExtensions() {
-	// For JSON parsing, we need to re-read the raw spec to get extensions.
-	// For now, parse extensions from the raw JSON file.
 	data, err := os.ReadFile(g.config.Input)
 	if err != nil {
 		return
 	}
 	ext := strings.ToLower(filepath.Ext(g.config.Input))
-	if ext != ".json" {
-		// TODO: YAML extension parsing
-		return
+	if ext == ".yaml" || ext == ".yml" {
+		// Convert YAML to JSON so we can use the same extension parsing code.
+		data, err = spec.YAMLToJSON(data)
+		if err != nil {
+			return
+		}
 	}
 
 	var raw struct {
@@ -675,5 +682,61 @@ func (g *Generator) emitEndpoint(w *strings.Builder, imports map[string]bool, pa
 		w.WriteString(")")
 	}
 
+	// Error handlers.
+	errorHandlers := g.collectErrorHandlers(op, opName, imports)
+	if len(errorHandlers) > 0 {
+		imports["net/http"] = true
+		w.WriteString(".\n\tWithErrors(\n")
+		for _, eh := range errorHandlers {
+			fmt.Fprintf(w, "\t\topenapigo.ErrorHandler{StatusCode: %d, Parse: func(code int, header http.Header, body []byte) error {\n", eh.statusCode)
+			fmt.Fprintf(w, "\t\t\treturn &openapigo.APIError{StatusCode: code, Status: http.StatusText(code), Header: header, Body: body}\n")
+			fmt.Fprintf(w, "\t\t}},\n")
+		}
+		w.WriteString("\t)")
+	}
+
 	w.WriteString("\n\n")
+}
+
+// errorHandlerInfo holds metadata for generating an error handler.
+type errorHandlerInfo struct {
+	statusCode int // 0 = default, negative = range
+	goType     string
+}
+
+// collectErrorHandlers builds the list of error handlers for an endpoint.
+func (g *Generator) collectErrorHandlers(op *spec.Operation, opName string, imports map[string]bool) []errorHandlerInfo {
+	var handlers []errorHandlerInfo
+
+	// Collect error codes in deterministic order.
+	var errorCodes []string
+	for code := range op.Responses {
+		if code == "default" || (len(code) == 3 && code[0] >= '4') || (len(code) == 3 && code[0] == '5') {
+			errorCodes = append(errorCodes, code)
+		}
+	}
+	sort.Strings(errorCodes)
+
+	for _, code := range errorCodes {
+		resp := op.Responses[code]
+		if resp == nil || resp.Response == nil {
+			continue
+		}
+		errSchema := g.responseSchema(resp.Response)
+		if errSchema == nil {
+			continue
+		}
+		errName := opName + codeToName(code) + "Error"
+		goType := g.GoType(errSchema.Resolved(), errName)
+		g.collectImports(imports, errSchema.Resolved())
+
+		var statusCode int
+		if code == "default" {
+			statusCode = 0
+		} else {
+			fmt.Sscanf(code, "%d", &statusCode)
+		}
+		handlers = append(handlers, errorHandlerInfo{statusCode: statusCode, goType: goType})
+	}
+	return handlers
 }

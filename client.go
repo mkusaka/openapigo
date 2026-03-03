@@ -3,9 +3,13 @@ package openapigo
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"reflect"
+	"strings"
 )
 
 // Client holds configuration for making API requests.
@@ -17,6 +21,7 @@ type Client struct {
 	middleware []Middleware
 	headers    http.Header
 	codec      JSONCodec
+	handler    func(*http.Request) (*http.Response, error) // pre-built middleware chain
 }
 
 // Option configures a Client.
@@ -44,6 +49,8 @@ func NewClient(opts ...Option) *Client {
 		copy(mw, c.middleware)
 		c.middleware = mw
 	}
+	// Pre-build the middleware chain once at construction time.
+	c.handler = buildMiddlewareChain(c.httpClient, c.middleware)
 	return c
 }
 
@@ -171,6 +178,9 @@ func buildRequest[Req any](ctx context.Context, client *Client, method, pathTmpl
 	// 6. Set headers from struct tags.
 	setHeaders(httpReq.Header, req)
 
+	// 7. Set cookie parameters.
+	setCookies(httpReq, req)
+
 	if contentType != "" {
 		httpReq.Header.Set("Content-Type", contentType)
 	}
@@ -179,6 +189,7 @@ func buildRequest[Req any](ctx context.Context, client *Client, method, pathTmpl
 }
 
 // encodeBody encodes the body field of the request struct.
+// The media type is determined by the body tag: body:"application/json", body:"multipart/form-data", etc.
 func encodeBody[Req any](bodyMeta *fieldMeta, req Req, codec JSONCodec) (io.Reader, string, error) {
 	rv := reflectValue(req)
 	fv := rv.Field(bodyMeta.index)
@@ -187,29 +198,122 @@ func encodeBody[Req any](bodyMeta *fieldMeta, req Req, codec JSONCodec) (io.Read
 		return nil, "", nil
 	}
 
-	// For now, only JSON bodies are supported.
-	data, err := codec.Marshal(fv.Interface())
-	if err != nil {
-		return nil, "", err
+	switch bodyMeta.name {
+	case "application/json", "":
+		data, err := codec.Marshal(fv.Interface())
+		if err != nil {
+			return nil, "", err
+		}
+		return bytes.NewReader(data), "application/json", nil
+	case "application/octet-stream":
+		return encodeBinaryBody(fv)
+	case "multipart/form-data":
+		return encodeMultipartBody(fv)
+	default:
+		// Unknown media type — attempt JSON encoding.
+		data, err := codec.Marshal(fv.Interface())
+		if err != nil {
+			return nil, "", err
+		}
+		return bytes.NewReader(data), bodyMeta.name, nil
 	}
-	return bytes.NewReader(data), "application/json", nil
 }
 
-// executeWithMiddleware runs the middleware chain and then the HTTP call.
-func executeWithMiddleware(client *Client, req *http.Request) (*http.Response, error) {
-	// Build the handler chain: middleware[0] wraps middleware[1] wraps ... wraps http.Client.Do
-	handler := func(r *http.Request) (*http.Response, error) {
-		return client.httpClient.Do(r)
+// encodeBinaryBody encodes a []byte or io.Reader body field.
+func encodeBinaryBody(fv reflect.Value) (io.Reader, string, error) {
+	iface := fv.Interface()
+	if r, ok := iface.(io.Reader); ok {
+		return r, "application/octet-stream", nil
 	}
-	// Apply middleware in reverse order so the first middleware is outermost.
-	for i := len(client.middleware) - 1; i >= 0; i-- {
-		mw := client.middleware[i]
+	if b, ok := iface.([]byte); ok {
+		return bytes.NewReader(b), "application/octet-stream", nil
+	}
+	return nil, "", fmt.Errorf("binary body must be []byte or io.Reader, got %T", iface)
+}
+
+// encodeMultipartBody encodes a struct as multipart/form-data.
+// Fields tagged with json:"name" become form fields.
+// Fields of type []byte or io.Reader become file parts.
+func encodeMultipartBody(fv reflect.Value) (io.Reader, string, error) {
+	if fv.Kind() == reflect.Ptr {
+		fv = fv.Elem()
+	}
+	if fv.Kind() != reflect.Struct {
+		return nil, "", fmt.Errorf("multipart body must be a struct, got %s", fv.Kind())
+	}
+
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+
+	t := fv.Type()
+	for i := range t.NumField() {
+		field := t.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		fieldVal := fv.Field(i)
+		if isZeroValue(fieldVal) {
+			continue
+		}
+
+		name := field.Tag.Get("json")
+		if name == "" || name == "-" {
+			name = field.Name
+		}
+		if idx := strings.IndexByte(name, ','); idx != -1 {
+			name = name[:idx]
+		}
+
+		// Check if the field is a file ([]byte or io.Reader).
+		iface := fieldVal.Interface()
+		if b, ok := iface.([]byte); ok {
+			part, err := w.CreateFormFile(name, name)
+			if err != nil {
+				return nil, "", err
+			}
+			if _, err := part.Write(b); err != nil {
+				return nil, "", err
+			}
+		} else if r, ok := iface.(io.Reader); ok {
+			part, err := w.CreateFormFile(name, name)
+			if err != nil {
+				return nil, "", err
+			}
+			if _, err := io.Copy(part, r); err != nil {
+				return nil, "", err
+			}
+		} else {
+			if err := w.WriteField(name, fmt.Sprintf("%v", iface)); err != nil {
+				return nil, "", err
+			}
+		}
+	}
+
+	if err := w.Close(); err != nil {
+		return nil, "", err
+	}
+	return &buf, w.FormDataContentType(), nil
+}
+
+// executeWithMiddleware runs the pre-built middleware chain.
+func executeWithMiddleware(client *Client, req *http.Request) (*http.Response, error) {
+	return client.handler(req)
+}
+
+// buildMiddlewareChain creates a handler function with the middleware chain applied.
+// Called once at Client construction time.
+func buildMiddlewareChain(httpClient *http.Client, middleware []Middleware) func(*http.Request) (*http.Response, error) {
+	handler := func(r *http.Request) (*http.Response, error) {
+		return httpClient.Do(r)
+	}
+	for i := len(middleware) - 1; i >= 0; i-- {
+		mw := middleware[i]
 		next := handler
 		handler = func(r *http.Request) (*http.Response, error) {
 			return mw.RoundTrip(r, next)
 		}
 	}
-	return handler(req)
+	return handler
 }
 
 // parseSuccess parses a successful response body into the response type.
