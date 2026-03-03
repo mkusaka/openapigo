@@ -54,23 +54,25 @@ func parseYAML(data []byte) (*Document, error) {
 		return nil, fmt.Errorf("parse YAML spec: %w", err)
 	}
 
-	// Convert YAML to JSON, then use the JSON parser.
+	// Convert YAML to JSON for struct unmarshalling.
 	// This avoids issues with json.RawMessage not being directly
 	// deserializable from YAML scalars (e.g., enum values).
 	jsonData, err := yamlNodeToJSON(&node)
 	if err != nil {
 		return nil, fmt.Errorf("convert YAML to JSON: %w", err)
 	}
-	doc, err := parseJSON(jsonData)
-	if err != nil {
-		return nil, err
+	// Unmarshal JSON structure directly (skip parseJSON to avoid redundant
+	// JSON-based property order extraction — we use YAML node tree instead).
+	var doc Document
+	if err := json.Unmarshal(jsonData, &doc); err != nil {
+		return nil, fmt.Errorf("parse JSON spec: %w", err)
 	}
 
-	// Also extract ordering from the YAML node tree (more reliable than JSON re-parse).
+	// Extract ordering from the YAML node tree (more reliable than JSON re-parse).
 	doc.PathOrder = extractYAMLKeyOrder(&node, "paths")
-	extractSchemaPropertyOrdersFromYAML(doc, &node)
+	extractSchemaPropertyOrdersFromYAML(&doc, &node)
 
-	return doc, nil
+	return &doc, nil
 }
 
 // extractJSONKeyOrder extracts the key order of a top-level object field.
@@ -364,7 +366,9 @@ func yamlNodeToInterfaceImpl(node *yaml.Node, visited map[*yaml.Node]bool) any {
 			return nil // break cycle
 		}
 		visited[node] = true
-		return yamlNodeToInterfaceImpl(node.Alias, visited)
+		result := yamlNodeToInterfaceImpl(node.Alias, visited)
+		delete(visited, node) // backtrack so the same alias can be expanded again elsewhere
+		return result
 	default:
 		return nil
 	}

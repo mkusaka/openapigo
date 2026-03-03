@@ -489,14 +489,14 @@ func (g *Generator) emitOperation(w *strings.Builder, imports map[string]bool, p
 		}
 
 		if hasBody {
-			bodySchema := g.requestBodySchema(op.RequestBody.RequestBody)
+			bodySchema, bodyContentType := g.requestBodyInfo(op.RequestBody.RequestBody)
 			if bodySchema != nil {
 				goType := g.GoType(bodySchema.Resolved(), opName+"Body")
 				g.collectImports(imports, bodySchema.Resolved())
 				if !op.RequestBody.RequestBody.Required {
 					goType = "*" + goType
 				}
-				fmt.Fprintf(w, "\tBody %s `body:\"application/json\"`\n", goType)
+				fmt.Fprintf(w, "\tBody %s `body:\"%s\"`\n", goType, sanitizeTagValue(bodyContentType))
 			}
 		}
 
@@ -531,15 +531,35 @@ func (g *Generator) emitOperation(w *strings.Builder, imports map[string]bool, p
 	}
 }
 
-func (g *Generator) requestBodySchema(rb *spec.RequestBody) *spec.Schema {
+// requestBodyInfo returns the schema and content type for a request body.
+// Prefers application/json; falls back to other content types.
+func (g *Generator) requestBodyInfo(rb *spec.RequestBody) (*spec.Schema, string) {
 	if rb == nil || rb.Content == nil {
-		return nil
+		return nil, ""
 	}
-	mt, ok := rb.Content["application/json"]
-	if !ok {
-		return nil
+	// Prefer application/json.
+	if mt, ok := rb.Content["application/json"]; ok && mt != nil && mt.Schema != nil {
+		return mt.Schema, "application/json"
 	}
-	return mt.Schema
+	// Fall back: try known content types in preference order.
+	for _, ct := range []string{"multipart/form-data", "application/x-www-form-urlencoded", "application/octet-stream"} {
+		if mt, ok := rb.Content[ct]; ok && mt != nil && mt.Schema != nil {
+			return mt.Schema, ct
+		}
+	}
+	// Last resort: pick any content type with a schema.
+	var cts []string
+	for ct := range rb.Content {
+		cts = append(cts, ct)
+	}
+	sort.Strings(cts) // deterministic order
+	for _, ct := range cts {
+		mt := rb.Content[ct]
+		if mt != nil && mt.Schema != nil {
+			return mt.Schema, ct
+		}
+	}
+	return nil, ""
 }
 
 func (g *Generator) findSuccessResponseSchema(op *spec.Operation) *spec.Schema {
@@ -567,11 +587,23 @@ func (g *Generator) responseSchema(resp *spec.Response) *spec.Schema {
 	if resp == nil || resp.Content == nil {
 		return nil
 	}
-	mt, ok := resp.Content["application/json"]
-	if !ok {
-		return nil
+	// Prefer application/json.
+	if mt, ok := resp.Content["application/json"]; ok && mt != nil && mt.Schema != nil {
+		return mt.Schema
 	}
-	return mt.Schema
+	// Fall back: pick any content type with a schema (deterministic order).
+	var cts []string
+	for ct := range resp.Content {
+		cts = append(cts, ct)
+	}
+	sort.Strings(cts)
+	for _, ct := range cts {
+		mt := resp.Content[ct]
+		if mt != nil && mt.Schema != nil {
+			return mt.Schema
+		}
+	}
+	return nil
 }
 
 // mergeParams merges path-level and operation-level parameters.

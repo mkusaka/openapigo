@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 )
 
 // fieldMeta holds parsed struct tag information for a single field.
@@ -232,12 +233,16 @@ func setCookies(req *http.Request, reqVal any) {
 }
 
 // formatValue converts a reflect.Value to its string representation.
+// time.Time values are formatted as RFC3339 for OpenAPI date-time parameters.
 func formatValue(v reflect.Value) string {
 	if v.Kind() == reflect.Ptr {
 		if v.IsNil() {
 			return ""
 		}
 		v = v.Elem()
+	}
+	if t, ok := v.Interface().(time.Time); ok {
+		return t.Format(time.RFC3339)
 	}
 	return fmt.Sprintf("%v", v.Interface())
 }

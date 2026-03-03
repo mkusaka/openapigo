@@ -32,7 +32,15 @@ func (r *resolver) resolveAll() error {
 		}
 	}
 
-	// Resolve paths.
+	// First pass: resolve all PathItem $refs.
+	// Uses recursive resolution so chained refs (A→B→C) are handled
+	// regardless of map iteration order.
+	visitedPI := make(map[*PathItem]bool)
+	for _, pi := range r.doc.Paths {
+		r.resolvePathItemRef(pi, visitedPI)
+	}
+
+	// Second pass: resolve operations and parameters.
 	for _, pi := range r.doc.Paths {
 		if err := r.resolvePathItem(pi); err != nil {
 			return err
@@ -41,28 +49,42 @@ func (r *resolver) resolveAll() error {
 	return nil
 }
 
+// resolvePathItemRef resolves a PathItem $ref, recursively resolving the target first
+// to handle chained refs. The visited set prevents infinite loops from circular refs.
+func (r *resolver) resolvePathItemRef(pi *PathItem, visited map[*PathItem]bool) {
+	if pi == nil || pi.Ref == "" || !strings.HasPrefix(pi.Ref, "#/paths/") {
+		return
+	}
+	if visited[pi] {
+		pi.Ref = ""
+		return
+	}
+	visited[pi] = true
+
+	// Un-escape JSON Pointer: ~1 → /, ~0 → ~
+	pathKey := pi.Ref[len("#/paths/"):]
+	pathKey = strings.ReplaceAll(pathKey, "~1", "/")
+	pathKey = strings.ReplaceAll(pathKey, "~0", "~")
+	if target, ok := r.doc.Paths[pathKey]; ok && target != pi {
+		// Resolve target's $ref first (chained refs).
+		r.resolvePathItemRef(target, visited)
+		pi.Get = target.Get
+		pi.Put = target.Put
+		pi.Post = target.Post
+		pi.Delete = target.Delete
+		pi.Patch = target.Patch
+		if len(pi.Parameters) == 0 {
+			pi.Parameters = target.Parameters
+		}
+	}
+	pi.Ref = ""
+}
+
 func (r *resolver) resolvePathItem(pi *PathItem) error {
 	if pi == nil {
 		return nil
 	}
-	// Resolve PathItem $ref (e.g., "$ref": "#/paths/~1other").
-	if pi.Ref != "" && strings.HasPrefix(pi.Ref, "#/paths/") {
-		// Un-escape JSON Pointer: ~1 → /, ~0 → ~
-		pathKey := pi.Ref[len("#/paths/"):]
-		pathKey = strings.ReplaceAll(pathKey, "~1", "/")
-		pathKey = strings.ReplaceAll(pathKey, "~0", "~")
-		if target, ok := r.doc.Paths[pathKey]; ok && target != pi {
-			pi.Get = target.Get
-			pi.Put = target.Put
-			pi.Post = target.Post
-			pi.Delete = target.Delete
-			pi.Patch = target.Patch
-			if len(pi.Parameters) == 0 {
-				pi.Parameters = target.Parameters
-			}
-		}
-		pi.Ref = ""
-	}
+	// PathItem $refs are already resolved in the first pass.
 	// Resolve path-level parameters.
 	for _, p := range pi.Parameters {
 		if err := r.resolveParameterOrRef(p); err != nil {

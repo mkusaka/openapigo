@@ -177,5 +177,13 @@ func sanitizeIdentifier(s string) string {
 			b.WriteRune(r)
 		}
 	}
-	return b.String()
+	result := b.String()
+	if result == "" {
+		return result
+	}
+	// Ensure identifier starts with a letter or underscore (digit-leading is invalid Go).
+	if !unicode.IsLetter(rune(result[0])) && result[0] != '_' {
+		result = "X" + result
+	}
+	return result
 }

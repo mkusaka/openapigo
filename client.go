@@ -111,7 +111,14 @@ func DoRaw[Req any](ctx context.Context, client *Client, endpoint Endpoint[Req, 
 	if err != nil {
 		return nil, err
 	}
-	return executeWithMiddleware(client, httpReq)
+	resp, err := executeWithMiddleware(client, httpReq)
+	if err != nil {
+		if httpReq.Body != nil {
+			httpReq.Body.Close()
+		}
+		return nil, err
+	}
+	return resp, nil
 }
 
 // doInternal is the shared implementation for Do and DoWithResponse.
@@ -123,6 +130,11 @@ func doInternal[Req, Resp any](ctx context.Context, client *Client, endpoint End
 
 	httpResp, err := executeWithMiddleware(client, httpReq)
 	if err != nil {
+		// Close the request body to unblock any goroutine writing to a pipe
+		// (e.g., multipart/form-data streaming via io.Pipe).
+		if httpReq.Body != nil {
+			httpReq.Body.Close()
+		}
 		return nil, nil, err
 	}
 	defer httpResp.Body.Close()
