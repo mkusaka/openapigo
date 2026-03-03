@@ -226,6 +226,10 @@ func encodeBinaryBody(fv reflect.Value) (io.Reader, string, error) {
 		if fv.IsNil() {
 			return nil, "", nil
 		}
+		// Check io.Reader before Elem() — pointer receiver methods (e.g., *bytes.Buffer) are lost on dereference.
+		if r, ok := fv.Interface().(io.Reader); ok {
+			return r, "application/octet-stream", nil
+		}
 		fv = fv.Elem()
 	}
 	iface := fv.Interface()
@@ -289,9 +293,20 @@ func writeMultipartFields(w *multipart.Writer, fv reflect.Value) error {
 			name = name[:idx]
 		}
 
-		// Dereference pointer fields.
+		// Check io.Reader on pointer BEFORE dereferencing — pointer receiver methods
+		// (e.g., *bytes.Buffer) are lost when calling Elem().
 		if fieldVal.Kind() == reflect.Ptr {
 			if fieldVal.IsNil() {
+				continue
+			}
+			if r, ok := fieldVal.Interface().(io.Reader); ok {
+				part, err := w.CreateFormFile(name, name)
+				if err != nil {
+					return err
+				}
+				if _, err := io.Copy(part, r); err != nil {
+					return err
+				}
 				continue
 			}
 			fieldVal = fieldVal.Elem()
