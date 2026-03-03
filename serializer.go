@@ -106,17 +106,19 @@ func buildPath(tmpl string, req any) string {
 			fv = fv.Elem()
 		}
 		// OpenAPI simple style: arrays are comma-separated.
+		// Each element is individually percent-encoded, but commas are NOT escaped
+		// (they serve as delimiters per the OpenAPI simple serialization style).
 		var val string
 		if fv.Kind() == reflect.Slice {
 			var vals []string
 			for j := range fv.Len() {
-				vals = append(vals, formatValue(fv.Index(j)))
+				vals = append(vals, url.PathEscape(formatValue(fv.Index(j))))
 			}
 			val = strings.Join(vals, ",")
 		} else {
-			val = formatValue(fv)
+			val = url.PathEscape(formatValue(fv))
 		}
-		result = strings.ReplaceAll(result, "{"+fm.name+"}", url.PathEscape(val))
+		result = strings.ReplaceAll(result, "{"+fm.name+"}", val)
 	}
 	return result
 }

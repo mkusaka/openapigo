@@ -82,10 +82,10 @@ func (g *Generator) generateAuth(source string) string {
 func emitAPIKeyAuth(w *strings.Builder, funcName string, ss *spec.SecurityScheme) {
 	comment := sanitizeComment(ss.Description)
 	if comment != "" {
-		fmt.Fprintf(w, "// %s returns a middleware that sets the %q %s parameter.\n// %s\n",
+		fmt.Fprintf(w, "// %s returns an Option that sets the %q %s parameter.\n// %s\n",
 			funcName, ss.Name, ss.In, comment)
 	} else {
-		fmt.Fprintf(w, "// %s returns a middleware that sets the %q %s parameter.\n",
+		fmt.Fprintf(w, "// %s returns an Option that sets the %q %s parameter.\n",
 			funcName, ss.Name, ss.In)
 	}
 	fmt.Fprintf(w, "func %s(token string) openapigo.Option {\n", funcName)
@@ -114,10 +114,10 @@ func emitAPIKeyAuth(w *strings.Builder, funcName string, ss *spec.SecurityScheme
 func emitBasicAuth(w *strings.Builder, funcName string, ss *spec.SecurityScheme) {
 	comment := sanitizeComment(ss.Description)
 	if comment != "" {
-		fmt.Fprintf(w, "// %s returns a middleware that sets HTTP Basic authentication.\n// %s\n",
+		fmt.Fprintf(w, "// %s returns an Option that sets HTTP Basic authentication.\n// %s\n",
 			funcName, comment)
 	} else {
-		fmt.Fprintf(w, "// %s returns a middleware that sets HTTP Basic authentication.\n", funcName)
+		fmt.Fprintf(w, "// %s returns an Option that sets HTTP Basic authentication.\n", funcName)
 	}
 	fmt.Fprintf(w, "func %s(username, password string) openapigo.Option {\n", funcName)
 	fmt.Fprintf(w, "\tcred := base64.StdEncoding.EncodeToString([]byte(username + \":\" + password))\n")
@@ -131,10 +131,10 @@ func emitBasicAuth(w *strings.Builder, funcName string, ss *spec.SecurityScheme)
 func emitBearerAuth(w *strings.Builder, funcName string, ss *spec.SecurityScheme) {
 	comment := sanitizeComment(ss.Description)
 	if comment != "" {
-		fmt.Fprintf(w, "// %s returns a middleware that sets Bearer token authentication.\n// %s\n",
+		fmt.Fprintf(w, "// %s returns an Option that sets Bearer token authentication.\n// %s\n",
 			funcName, comment)
 	} else {
-		fmt.Fprintf(w, "// %s returns a middleware that sets Bearer token authentication.\n", funcName)
+		fmt.Fprintf(w, "// %s returns an Option that sets Bearer token authentication.\n", funcName)
 	}
 	fmt.Fprintf(w, "func %s(token string) openapigo.Option {\n", funcName)
 	fmt.Fprintf(w, "\treturn openapigo.WithMiddleware(openapigo.MiddlewareFunc(func(req *http.Request, next func(*http.Request) (*http.Response, error)) (*http.Response, error) {\n")

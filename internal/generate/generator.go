@@ -32,8 +32,13 @@ type Generator struct {
 
 // Run executes the full generation pipeline.
 func Run(cfg Config) error {
-	// 1. Load and resolve spec.
-	doc, err := spec.Load(cfg.Input)
+	// 1. Load and resolve spec (read file once).
+	data, err := os.ReadFile(cfg.Input)
+	if err != nil {
+		return fmt.Errorf("read spec: %w", err)
+	}
+	fileExt := filepath.Ext(cfg.Input)
+	doc, err := spec.Parse(data, fileExt)
 	if err != nil {
 		return err
 	}
@@ -62,8 +67,8 @@ func Run(cfg Config) error {
 	// 3. Assign names to component schemas.
 	g.assignSchemaNames()
 
-	// 4. Parse vendor extensions for all schemas.
-	g.parseExtensions()
+	// 4. Parse vendor extensions for all schemas (reuse already-loaded data).
+	g.parseExtensions(data, fileExt)
 
 	// 5. Generate files.
 	// Operations and endpoints are generated first so that inline schemas
@@ -116,15 +121,13 @@ func (g *Generator) assignSchemaNames() {
 
 // parseExtensions extracts vendor extensions from raw YAML/JSON into the Extensions map.
 // This is needed because the Extensions field is tagged json:"-" and not populated by
-// standard unmarshalling.
-func (g *Generator) parseExtensions() {
-	data, err := os.ReadFile(g.config.Input)
-	if err != nil {
-		return
-	}
-	ext := strings.ToLower(filepath.Ext(g.config.Input))
+// standard unmarshalling. The data and fileExt are passed from Run to avoid re-reading
+// the spec file.
+func (g *Generator) parseExtensions(data []byte, fileExt string) {
+	ext := strings.ToLower(fileExt)
 	if ext == ".yaml" || ext == ".yml" {
 		// Convert YAML to JSON so we can use the same extension parsing code.
+		var err error
 		data, err = spec.YAMLToJSON(data)
 		if err != nil {
 			return

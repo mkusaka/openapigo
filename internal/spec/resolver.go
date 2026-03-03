@@ -310,6 +310,7 @@ func (r *resolver) resolveResponseRef(ref string) (*Response, error) {
 }
 
 // extractRefName extracts the component name from a $ref like "#/components/{section}/Name".
+// JSON Pointer escapes (~0 for ~, ~1 for /) are decoded.
 func extractRefName(ref, expectedSection string) (string, error) {
 	if !strings.HasPrefix(ref, "#/") {
 		return "", fmt.Errorf("external $ref %q not supported (use --resolve)", ref)
@@ -318,5 +319,8 @@ func extractRefName(ref, expectedSection string) (string, error) {
 	if len(parts) != 3 || parts[0] != "components" || parts[1] != expectedSection {
 		return "", fmt.Errorf("invalid $ref %q: expected #/components/%s/<name>", ref, expectedSection)
 	}
-	return parts[2], nil
+	// Decode JSON Pointer escapes: ~1 → /, ~0 → ~ (order matters per RFC 6901).
+	name := strings.ReplaceAll(parts[2], "~1", "/")
+	name = strings.ReplaceAll(name, "~0", "~")
+	return name, nil
 }
