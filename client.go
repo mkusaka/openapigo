@@ -220,7 +220,14 @@ func encodeBody[Req any](bodyMeta *fieldMeta, req Req, codec JSONCodec) (io.Read
 }
 
 // encodeBinaryBody encodes a []byte or io.Reader body field.
+// Handles both direct values and pointer types (e.g., *[]byte for optional bodies).
 func encodeBinaryBody(fv reflect.Value) (io.Reader, string, error) {
+	if fv.Kind() == reflect.Ptr {
+		if fv.IsNil() {
+			return nil, "", nil
+		}
+		fv = fv.Elem()
+	}
 	iface := fv.Interface()
 	if r, ok := iface.(io.Reader); ok {
 		return r, "application/octet-stream", nil
@@ -232,8 +239,9 @@ func encodeBinaryBody(fv reflect.Value) (io.Reader, string, error) {
 }
 
 // encodeMultipartBody encodes a struct as multipart/form-data.
-// Fields tagged with json:"name" become form fields.
+// Fields tagged with json:"name" become form fields; json:"-" fields are skipped.
 // Fields of type []byte or io.Reader become file parts.
+// Uses io.Pipe for streaming to avoid buffering entire payloads in memory.
 func encodeMultipartBody(fv reflect.Value) (io.Reader, string, error) {
 	if fv.Kind() == reflect.Ptr {
 		fv = fv.Elem()
@@ -242,9 +250,23 @@ func encodeMultipartBody(fv reflect.Value) (io.Reader, string, error) {
 		return nil, "", fmt.Errorf("multipart body must be a struct, got %s", fv.Kind())
 	}
 
-	var buf bytes.Buffer
-	w := multipart.NewWriter(&buf)
+	pr, pw := io.Pipe()
+	w := multipart.NewWriter(pw)
+	contentType := w.FormDataContentType()
 
+	go func() {
+		err := writeMultipartFields(w, fv)
+		if closeErr := w.Close(); err == nil {
+			err = closeErr
+		}
+		pw.CloseWithError(err)
+	}()
+
+	return pr, contentType, nil
+}
+
+// writeMultipartFields writes struct fields to a multipart writer.
+func writeMultipartFields(w *multipart.Writer, fv reflect.Value) error {
 	t := fv.Type()
 	for i := range t.NumField() {
 		field := t.Field(i)
@@ -257,11 +279,22 @@ func encodeMultipartBody(fv reflect.Value) (io.Reader, string, error) {
 		}
 
 		name := field.Tag.Get("json")
-		if name == "" || name == "-" {
+		if name == "-" {
+			continue // skip fields explicitly excluded via json:"-"
+		}
+		if name == "" {
 			name = field.Name
 		}
 		if idx := strings.IndexByte(name, ','); idx != -1 {
 			name = name[:idx]
+		}
+
+		// Dereference pointer fields.
+		if fieldVal.Kind() == reflect.Ptr {
+			if fieldVal.IsNil() {
+				continue
+			}
+			fieldVal = fieldVal.Elem()
 		}
 
 		// Check if the field is a file ([]byte or io.Reader).
@@ -269,30 +302,33 @@ func encodeMultipartBody(fv reflect.Value) (io.Reader, string, error) {
 		if b, ok := iface.([]byte); ok {
 			part, err := w.CreateFormFile(name, name)
 			if err != nil {
-				return nil, "", err
+				return err
 			}
 			if _, err := part.Write(b); err != nil {
-				return nil, "", err
+				return err
 			}
 		} else if r, ok := iface.(io.Reader); ok {
 			part, err := w.CreateFormFile(name, name)
 			if err != nil {
-				return nil, "", err
+				return err
 			}
 			if _, err := io.Copy(part, r); err != nil {
-				return nil, "", err
+				return err
+			}
+		} else if fieldVal.Kind() == reflect.Slice {
+			for j := range fieldVal.Len() {
+				val := fmt.Sprintf("%v", fieldVal.Index(j).Interface())
+				if err := w.WriteField(name, val); err != nil {
+					return err
+				}
 			}
 		} else {
 			if err := w.WriteField(name, fmt.Sprintf("%v", iface)); err != nil {
-				return nil, "", err
+				return err
 			}
 		}
 	}
-
-	if err := w.Close(); err != nil {
-		return nil, "", err
-	}
-	return &buf, w.FormDataContentType(), nil
+	return nil
 }
 
 // executeWithMiddleware runs the pre-built middleware chain.

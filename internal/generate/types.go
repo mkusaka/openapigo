@@ -251,8 +251,8 @@ func (g *Generator) emitStructType(w *strings.Builder, typeName string, s *spec.
 		nullable := isNullable(resolved)
 		wrapped := wrapNullableOptional(goType, req, nullable)
 
-		// JSON tag.
-		tag := propName
+		// JSON tag (sanitize to prevent struct tag injection).
+		tag := sanitizeTagValue(propName)
 		if !req && !nullable {
 			tag += ",omitzero"
 		}

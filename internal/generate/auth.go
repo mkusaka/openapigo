@@ -33,7 +33,6 @@ func (g *Generator) generateAuth(source string) string {
 	}
 	sort.Strings(names)
 
-	hasBasicAuth := false
 	for _, name := range names {
 		ss := g.doc.Components.SecuritySchemes[name]
 		if ss == nil {
@@ -44,7 +43,6 @@ func (g *Generator) generateAuth(source string) string {
 			emitAPIKeyAuth(&funcDefs, name, ss)
 		case "http":
 			if strings.EqualFold(ss.Scheme, "basic") {
-				hasBasicAuth = true
 				emitBasicAuth(&funcDefs, name, ss)
 				imports["encoding/base64"] = true
 			} else if strings.EqualFold(ss.Scheme, "bearer") {
@@ -52,7 +50,6 @@ func (g *Generator) generateAuth(source string) string {
 			}
 		}
 	}
-	_ = hasBasicAuth
 
 	// Write imports.
 	w.WriteString("import (\n")

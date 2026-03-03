@@ -147,6 +147,20 @@ func sanitizeComment(s string) string {
 	return s
 }
 
+// sanitizeTagValue strips characters that are unsafe in Go struct tag values.
+// Specifically, backticks and newlines could break out of the tag literal.
+func sanitizeTagValue(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == '`' || r == '\n' || r == '\r' {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // sanitizeIdentifier strips any characters that are not valid in a Go identifier.
 // This prevents code injection via malicious spec strings (e.g., x-go-name containing newlines).
 func sanitizeIdentifier(s string) string {

@@ -450,6 +450,14 @@ func (g *Generator) emitOperation(w *strings.Builder, imports map[string]bool, p
 				continue
 			}
 			param := p.Parameter
+			// Validate param.In against whitelist to prevent struct tag injection.
+			paramIn := param.In
+			switch paramIn {
+			case "path", "query", "header", "cookie":
+				// valid
+			default:
+				continue
+			}
 			fieldName := ToFieldName(param.Name)
 			goType := "string"
 			if param.Schema != nil {
@@ -459,7 +467,11 @@ func (g *Generator) emitOperation(w *strings.Builder, imports map[string]bool, p
 			if !param.Required {
 				goType = "*" + goType
 			}
-			fmt.Fprintf(w, "\t%s %s `%s:\"%s\"`\n", fieldName, goType, param.In, param.Name)
+			tag := sanitizeTagValue(param.Name)
+			if param.Explode != nil && !*param.Explode {
+				tag += ",noexplode"
+			}
+			fmt.Fprintf(w, "\t%s %s `%s:\"%s\"`\n", fieldName, goType, paramIn, tag)
 		}
 
 		if hasBody {
@@ -733,6 +745,9 @@ func (g *Generator) collectErrorHandlers(op *spec.Operation, opName string, impo
 		var statusCode int
 		if code == "default" {
 			statusCode = 0
+		} else if len(code) == 3 && (code[1] == 'X' || code[1] == 'x') && (code[2] == 'X' || code[2] == 'x') {
+			// Range code like "4XX", "5XX" → negative prefix: -4, -5
+			statusCode = -int(code[0] - '0')
 		} else {
 			fmt.Sscanf(code, "%d", &statusCode)
 		}

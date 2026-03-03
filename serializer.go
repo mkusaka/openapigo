@@ -56,9 +56,9 @@ func parseStructMeta(t reflect.Type) *structMeta {
 			explode := loc == "query" || loc == "cookie"
 			for _, opt := range parts[1:] {
 				switch opt {
-				case "explode":
+				case "explode", "explode=true":
 					explode = true
-				case "noexplode":
+				case "noexplode", "explode=false":
 					explode = false
 				}
 			}
@@ -208,9 +208,26 @@ func setCookies(req *http.Request, reqVal any) {
 			continue
 		}
 		if fv.Kind() == reflect.Ptr {
+			if fv.IsNil() {
+				continue
+			}
 			fv = fv.Elem()
 		}
-		req.AddCookie(&http.Cookie{Name: fm.name, Value: formatValue(fv)})
+		if fv.Kind() == reflect.Slice {
+			if fm.explode {
+				for j := range fv.Len() {
+					req.AddCookie(&http.Cookie{Name: fm.name, Value: formatValue(fv.Index(j))})
+				}
+			} else {
+				var vals []string
+				for j := range fv.Len() {
+					vals = append(vals, formatValue(fv.Index(j)))
+				}
+				req.AddCookie(&http.Cookie{Name: fm.name, Value: strings.Join(vals, ",")})
+			}
+		} else {
+			req.AddCookie(&http.Cookie{Name: fm.name, Value: formatValue(fv)})
+		}
 	}
 }
 

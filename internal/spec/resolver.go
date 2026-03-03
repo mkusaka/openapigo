@@ -9,15 +9,17 @@ import (
 // External $ref (file://, http://) are not handled here.
 func Resolve(doc *Document) error {
 	r := &resolver{
-		doc:     doc,
-		visited: make(map[string]bool),
+		doc:      doc,
+		visited:  make(map[string]bool),
+		resolved: make(map[*Schema]bool),
 	}
 	return r.resolveAll()
 }
 
 type resolver struct {
-	doc     *Document
-	visited map[string]bool // tracks visited $ref to detect cycles
+	doc      *Document
+	visited  map[string]bool  // tracks visited $ref to detect cycles
+	resolved map[*Schema]bool // memoize fully resolved schemas
 }
 
 func (r *resolver) resolveAll() error {
@@ -149,9 +151,11 @@ func (r *resolver) resolveSchema(s *Schema) error {
 	if s == nil {
 		return nil
 	}
+	if r.resolved[s] {
+		return nil
+	}
 	if s.Ref != "" {
 		if r.visited[s.Ref] {
-			// Circular reference — mark as resolved to itself and stop.
 			return nil
 		}
 		r.visited[s.Ref] = true
@@ -164,6 +168,7 @@ func (r *resolver) resolveSchema(s *Schema) error {
 			return err
 		}
 		delete(r.visited, s.Ref)
+		r.resolved[s] = true
 		return nil
 	}
 
@@ -199,6 +204,7 @@ func (r *resolver) resolveSchema(s *Schema) error {
 			return err
 		}
 	}
+	r.resolved[s] = true
 	return nil
 }
 
