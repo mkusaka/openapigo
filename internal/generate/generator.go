@@ -80,7 +80,7 @@ func Run(cfg Config) error {
 	typesCode := g.generateTypes(source)
 	authCode := g.generateAuth(source)
 
-	// 6. Write files.
+	// 6. Write files atomically and clean up stale generated files.
 	files := map[string]string{
 		"types.go":      typesCode,
 		"operations.go": opsCode,
@@ -89,9 +89,19 @@ func Run(cfg Config) error {
 	if authCode != "" {
 		files["auth.go"] = authCode
 	}
+
+	// Clean stale generated files before writing new ones.
+	currentFiles := make(map[string]bool, len(files))
+	for name := range files {
+		currentFiles[name] = true
+	}
+	if err := cleanStaleFiles(cfg.Output, currentFiles); err != nil {
+		return fmt.Errorf("clean stale files: %w", err)
+	}
+
 	for name, code := range files {
 		path := filepath.Join(cfg.Output, name)
-		if err := writeFile(path, []byte(code)); err != nil {
+		if err := writeFileAtomic(path, []byte(code)); err != nil {
 			return err
 		}
 	}
@@ -250,10 +260,20 @@ func (g *Generator) generateTypes(source string) string {
 	}
 
 	// Emit component schemas.
+	type schemaEntry struct {
+		name   string
+		schema *spec.Schema
+	}
+	var allSchemas []schemaEntry
 	for _, name := range names {
 		s := g.doc.Components.Schemas[name]
 		goName := g.schemaNames[s]
 		g.emitSchemaType(&typeDefs, goName, s)
+		// Emit Request/Response variants for schemas with readOnly/writeOnly.
+		if resolved := s.Resolved(); resolved != nil && (resolved.Type == "object" || len(resolved.Properties) > 0) {
+			g.emitReadWriteVariants(&typeDefs, goName, resolved)
+		}
+		allSchemas = append(allSchemas, schemaEntry{goName, s})
 	}
 
 	// Emit inline schemas that were discovered during type generation.
@@ -271,6 +291,20 @@ func (g *Generator) generateTypes(source string) string {
 		}
 		emitted[ns.name] = true
 		g.emitSchemaType(&typeDefs, ns.name, ns.schema)
+		// Emit Request/Response variants for inline schemas too.
+		if resolved := ns.schema.Resolved(); resolved != nil && (resolved.Type == "object" || len(resolved.Properties) > 0) {
+			g.emitReadWriteVariants(&typeDefs, ns.name, resolved)
+		}
+		allSchemas = append(allSchemas, schemaEntry{ns.name, ns.schema})
+	}
+
+	// Emit pattern variables and Validate() methods.
+	for _, entry := range allSchemas {
+		resolved := entry.schema.Resolved()
+		if resolved != nil {
+			g.emitPatternVars(&typeDefs, entry.name, resolved)
+			g.emitValidateMethod(&typeDefs, entry.name, resolved)
+		}
 	}
 
 	// Build imports.
@@ -508,10 +542,7 @@ func (g *Generator) emitOperation(w *strings.Builder, imports map[string]bool, p
 			if !param.Required {
 				goType = "*" + goType
 			}
-			tag := sanitizeTagValue(param.Name)
-			if param.Explode != nil && !*param.Explode {
-				tag += ",noexplode"
-			}
+			tag := buildParamTag(param)
 			fmt.Fprintf(w, "\t%s %s `%s:\"%s\"`\n", fieldName, goType, paramIn, tag)
 		}
 
@@ -858,4 +889,57 @@ func (g *Generator) collectErrorHandlers(op *spec.Operation, opName string, impo
 		handlers = append(handlers, errorHandlerInfo{statusCode: statusCode, goType: goType})
 	}
 	return handlers
+}
+
+// defaultParamStyle returns the default serialization style for a parameter location.
+func defaultParamStyle(in string) string {
+	switch in {
+	case "path":
+		return "simple"
+	case "query", "cookie":
+		return "form"
+	case "header":
+		return "simple"
+	default:
+		return ""
+	}
+}
+
+// defaultParamExplode returns the default explode value for a parameter location.
+func defaultParamExplode(in string) bool {
+	return in == "query" || in == "cookie"
+}
+
+// buildParamTag builds the struct tag value for a parameter,
+// including style and explode options when they differ from defaults.
+func buildParamTag(param *spec.Parameter) string {
+	tag := sanitizeTagValue(param.Name)
+
+	style := param.Style
+	if style == "" {
+		style = defaultParamStyle(param.In)
+	}
+	defStyle := defaultParamStyle(param.In)
+
+	explode := defaultParamExplode(param.In)
+	if param.Explode != nil {
+		explode = *param.Explode
+	}
+	defExplode := defaultParamExplode(param.In)
+
+	// Only add style if it differs from the default.
+	if style != defStyle {
+		tag += "," + sanitizeTagValue(style)
+	}
+
+	// Only add explode option if it differs from the default.
+	if explode != defExplode {
+		if explode {
+			tag += ",explode"
+		} else {
+			tag += ",noexplode"
+		}
+	}
+
+	return tag
 }

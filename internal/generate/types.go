@@ -380,3 +380,147 @@ type namedSchema struct {
 	name   string
 	schema *spec.Schema
 }
+
+// hasReadWriteProps reports whether any property of a schema is readOnly or writeOnly.
+func hasReadWriteProps(s *spec.Schema) (hasRead, hasWrite bool) {
+	if s == nil {
+		return false, false
+	}
+	for _, prop := range s.Properties {
+		if prop == nil {
+			continue
+		}
+		resolved := prop.Resolved()
+		if resolved.ReadOnly {
+			hasRead = true
+		}
+		if resolved.WriteOnly {
+			hasWrite = true
+		}
+		if hasRead && hasWrite {
+			return
+		}
+	}
+	return
+}
+
+// emitReadWriteVariants generates Request/Response struct variants for schemas
+// that have readOnly or writeOnly properties, plus conversion methods.
+func (g *Generator) emitReadWriteVariants(w *strings.Builder, typeName string, s *spec.Schema) {
+	hasRead, hasWrite := hasReadWriteProps(s)
+	if !hasRead && !hasWrite {
+		return
+	}
+
+	propOrder := s.PropertyOrder
+	if len(propOrder) == 0 {
+		for name := range s.Properties {
+			propOrder = append(propOrder, name)
+		}
+		slices.Sort(propOrder)
+	}
+
+	// Request type: excludes readOnly fields.
+	if hasRead {
+		reqTypeName := typeName + "Request"
+		fmt.Fprintf(w, "// %s is %s without read-only fields (for request bodies).\ntype %s struct {\n", reqTypeName, typeName, reqTypeName)
+		for _, propName := range propOrder {
+			prop := s.Properties[propName]
+			if prop == nil {
+				continue
+			}
+			resolved := prop.Resolved()
+			if resolved.ReadOnly {
+				continue // skip readOnly
+			}
+			g.emitStructField(w, typeName, propName, resolved, s.Required)
+		}
+		fmt.Fprintf(w, "}\n\n")
+	}
+
+	// Response type: excludes writeOnly fields.
+	if hasWrite {
+		respTypeName := typeName + "Response"
+		fmt.Fprintf(w, "// %s is %s without write-only fields (for response bodies).\ntype %s struct {\n", respTypeName, typeName, respTypeName)
+		for _, propName := range propOrder {
+			prop := s.Properties[propName]
+			if prop == nil {
+				continue
+			}
+			resolved := prop.Resolved()
+			if resolved.WriteOnly {
+				continue // skip writeOnly
+			}
+			g.emitStructField(w, typeName, propName, resolved, s.Required)
+		}
+		fmt.Fprintf(w, "}\n\n")
+	}
+
+	// ToRequest() conversion method.
+	if hasRead {
+		reqTypeName := typeName + "Request"
+		fmt.Fprintf(w, "// ToRequest converts %s to %s, dropping read-only fields.\nfunc (v %s) ToRequest() %s {\n\treturn %s{\n", typeName, reqTypeName, typeName, reqTypeName, reqTypeName)
+		for _, propName := range propOrder {
+			prop := s.Properties[propName]
+			if prop == nil {
+				continue
+			}
+			resolved := prop.Resolved()
+			if resolved.ReadOnly {
+				continue
+			}
+			fieldName := g.resolveFieldName(resolved, propName)
+			fmt.Fprintf(w, "\t\t%s: v.%s,\n", fieldName, fieldName)
+		}
+		fmt.Fprintf(w, "\t}\n}\n\n")
+	}
+
+	// ToResponse() conversion method.
+	if hasWrite {
+		respTypeName := typeName + "Response"
+		fmt.Fprintf(w, "// ToResponse converts %s to %s, dropping write-only fields.\nfunc (v %s) ToResponse() %s {\n\treturn %s{\n", typeName, respTypeName, typeName, respTypeName, respTypeName)
+		for _, propName := range propOrder {
+			prop := s.Properties[propName]
+			if prop == nil {
+				continue
+			}
+			resolved := prop.Resolved()
+			if resolved.WriteOnly {
+				continue
+			}
+			fieldName := g.resolveFieldName(resolved, propName)
+			fmt.Fprintf(w, "\t\t%s: v.%s,\n", fieldName, fieldName)
+		}
+		fmt.Fprintf(w, "\t}\n}\n\n")
+	}
+}
+
+// emitStructField writes a single struct field (shared between base and variant types).
+func (g *Generator) emitStructField(w *strings.Builder, typeName, propName string, resolved *spec.Schema, required []string) {
+	fieldName := g.resolveFieldName(resolved, propName)
+	goType := g.GoType(resolved, typeName+ToPascalCase(propName))
+	req := isRequired(propName, required)
+	nullable := isNullable(resolved)
+	wrapped := wrapNullableOptional(goType, req, nullable)
+
+	tag := sanitizeTagValue(propName)
+	if !req {
+		tag += ",omitzero"
+	}
+
+	fmt.Fprintf(w, "\t%s %s `json:\"%s\"`\n", fieldName, wrapped, tag)
+}
+
+// resolveFieldName returns the Go field name for a property.
+func (g *Generator) resolveFieldName(resolved *spec.Schema, propName string) string {
+	fieldName := ToFieldName(propName)
+	if v, ok := resolved.Extensions["x-go-name"]; ok {
+		var goName string
+		if json.Unmarshal(v, &goName) == nil && goName != "" {
+			if sanitized := sanitizeIdentifier(goName); sanitized != "" {
+				fieldName = sanitized
+			}
+		}
+	}
+	return fieldName
+}

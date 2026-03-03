@@ -54,7 +54,7 @@ func runGenerate(args []string) {
 	}
 
 	if cfg.Package == "" {
-		cfg.Package = inferPackage(cfg.Output)
+		cfg.Package = generate.SanitizePackageName(inferPackage(cfg.Output))
 	}
 
 	if err := generate.Run(cfg); err != nil {

@@ -33,6 +33,8 @@ func TestGenerateAndCompile(t *testing.T) {
 	}{
 		{"basic-crud", filepath.Join(root, "testdata", "cases", "basic-crud", "spec.json")},
 		{"composition", filepath.Join(root, "testdata", "cases", "composition", "spec.json")},
+		{"readwrite", filepath.Join(root, "testdata", "cases", "readwrite", "spec.json")},
+		{"validation", filepath.Join(root, "testdata", "cases", "validation", "spec.json")},
 		{"circleci-v2", filepath.Join(root, "testdata", "realworld", "circleci-v2.json")},
 	}
 

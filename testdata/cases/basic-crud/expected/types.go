@@ -5,6 +5,7 @@
 package generated
 
 import (
+	"fmt"
 	"github.com/mkusaka/openapigo"
 	"time"
 )
@@ -43,4 +44,21 @@ func PetStatusValues() []PetStatus {
 		PetStatusInactive,
 		PetStatusAdopted,
 	}
+}
+
+// Validate checks all constraints on Pet.
+func (v Pet) Validate() error {
+	var errs openapigo.ValidationErrors
+	if v.Status != nil {
+		switch string(*v.Status) {
+		case "active", "inactive", "adopted":
+			// valid
+		default:
+			errs = append(errs, openapigo.ValidationError{Field: "Status", Constraint: "enum", Message: fmt.Sprintf("invalid value %q", *v.Status)})
+		}
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
 }
