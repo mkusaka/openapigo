@@ -206,7 +206,9 @@ func encodeBody[Req any](bodyMeta *fieldMeta, req Req, codec JSONCodec) (io.Read
 	rv := reflectValue(req)
 	fv := rv.Field(bodyMeta.index)
 
-	if isZeroValue(fv) {
+	// Only skip nil values (optional/pointer body). Non-nil zero values
+	// (0, false, empty string, zero-value structs) are valid and must be encoded.
+	if isNilValue(fv) {
 		return nil, "", nil
 	}
 

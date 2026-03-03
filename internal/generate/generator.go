@@ -27,6 +27,7 @@ type Generator struct {
 	imports       map[string]bool         // import paths needed
 	usedNames     map[string]int          // name → count for collision detection
 	opNames       map[string]string       // operationID → Go name (cached, idempotent)
+	usedOpNames   map[string]bool         // set of assigned operation Go names (O(1) lookup)
 }
 
 // Run executes the full generation pipeline.
@@ -55,6 +56,7 @@ func Run(cfg Config) error {
 		imports:     make(map[string]bool),
 		usedNames:   make(map[string]int),
 		opNames:     make(map[string]string),
+		usedOpNames: make(map[string]bool),
 	}
 
 	// 3. Assign names to component schemas.
@@ -436,6 +438,7 @@ func (g *Generator) opNameFor(op *spec.Operation) string {
 		opName = fmt.Sprintf("%s%d", base, n)
 	}
 	g.opNames[op.OperationID] = opName
+	g.usedOpNames[opName] = true
 	return opName
 }
 
@@ -444,12 +447,7 @@ func (g *Generator) nameCollides(name string) bool {
 	if _, ok := g.usedNames[name]; ok {
 		return true
 	}
-	for _, existing := range g.opNames {
-		if existing == name {
-			return true
-		}
-	}
-	return false
+	return g.usedOpNames[name]
 }
 
 // emitOperation writes request/response structs for an operation.
@@ -530,27 +528,23 @@ func (g *Generator) emitOperation(w *strings.Builder, imports map[string]bool, p
 	}
 
 	// --- Response type ---
-	// Find the primary success response.
+	// Discover the type name (to register inline schemas) but do NOT collect
+	// imports here — operations.go defines param structs only. Response types
+	// are referenced in endpoints.go, which collects its own imports.
 	successSchema := g.findSuccessResponseSchema(op)
 	if successSchema != nil {
-		// Check if this schema already has a name.
-		goType := g.GoType(successSchema.Resolved(), opName+"Response")
-		g.collectImports(imports, successSchema.Resolved())
-		// If the GoType is just a named type, no need to emit a separate Response type.
-		_ = goType
+		_ = g.GoType(successSchema.Resolved(), opName+"Response")
 	}
 
 	// --- Error types ---
+	// Same: discover type names without collecting imports.
 	for code, resp := range op.Responses {
 		if code == "default" || (len(code) == 3 && code[0] >= '4') {
 			if resp.Response != nil {
 				errSchema := g.responseSchema(resp.Response)
 				if errSchema != nil {
 					errName := opName + codeToName(code) + "Error"
-					// Only emit if this is an inline schema.
-					existing := g.GoType(errSchema.Resolved(), errName)
-					g.collectImports(imports, errSchema.Resolved())
-					_ = existing
+					_ = g.GoType(errSchema.Resolved(), errName)
 				}
 			}
 		}
@@ -661,8 +655,17 @@ func (g *Generator) collectImports(imports map[string]bool, s *spec.Schema) {
 	if s == nil {
 		return
 	}
-	if s.Type == "string" && s.Format == "date-time" {
+	// Named component schema — its transitive imports are in types.go, not here.
+	if _, ok := g.schemaNames[s]; ok {
+		return
+	}
+	switch {
+	case s.Type == "string" && s.Format == "date-time":
 		imports["time"] = true
+	case s.Type == "string" && s.Format == "date":
+		imports["github.com/mkusaka/openapigo"] = true
+	case s.Type == "array" && s.Items != nil:
+		g.collectImports(imports, s.Items.Resolved())
 	}
 }
 
@@ -748,6 +751,7 @@ func (g *Generator) emitEndpoint(w *strings.Builder, imports map[string]bool, pa
 	successSchema := g.findSuccessResponseSchema(op)
 	if successSchema != nil {
 		respType = g.GoType(successSchema.Resolved(), opName+"Response")
+		g.collectImports(imports, successSchema.Resolved())
 	}
 
 	// Find success codes. Numeric codes are emitted directly; "2XX" wildcard
@@ -836,7 +840,8 @@ func (g *Generator) collectErrorHandlers(op *spec.Operation, opName string, impo
 		}
 		errName := opName + codeToName(code) + "Error"
 		goType := g.GoType(errSchema.Resolved(), errName)
-		g.collectImports(imports, errSchema.Resolved())
+		// Note: error handler bodies in endpoints.go only use openapigo.APIError and
+		// http.Header, so we do NOT collect schema-level imports here.
 
 		var statusCode int
 		if code == "default" {

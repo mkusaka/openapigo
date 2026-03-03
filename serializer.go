@@ -142,7 +142,7 @@ func buildQuery(u *url.URL, req any) {
 			continue
 		}
 		fv := rv.Field(fm.index)
-		if isZeroValue(fv) {
+		if shouldSkipParam(fv) {
 			continue
 		}
 		// Dereference pointer.
@@ -193,7 +193,7 @@ func setHeaders(header map[string][]string, req any) {
 			continue
 		}
 		fv := rv.Field(fm.index)
-		if isZeroValue(fv) {
+		if shouldSkipParam(fv) {
 			continue
 		}
 		if fv.Kind() == reflect.Ptr {
@@ -231,7 +231,7 @@ func setCookies(req *http.Request, reqVal any) {
 			continue
 		}
 		fv := rv.Field(fm.index)
-		if isZeroValue(fv) {
+		if shouldSkipParam(fv) {
 			continue
 		}
 		if fv.Kind() == reflect.Ptr {
@@ -288,5 +288,39 @@ func isZeroValue(v reflect.Value) bool {
 		return v.IsZero()
 	default:
 		return v.IsZero()
+	}
+}
+
+// isNilValue reports whether the value is nil.
+// Unlike isZeroValue, it does not treat scalar zero values (0, false, "") as empty,
+// which preserves required non-pointer fields with valid zero values.
+func isNilValue(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Interface:
+		return v.IsNil()
+	case reflect.Slice, reflect.Map:
+		return v.IsNil()
+	default:
+		return false
+	}
+}
+
+// shouldSkipParam reports whether a parameter field should be omitted from the request.
+// Nil pointers and nil slices/maps are skipped. Nullable structs with IsZero() are skipped.
+// Non-pointer zero values (0, false, "") are NOT skipped — they represent valid required param values.
+func shouldSkipParam(fv reflect.Value) bool {
+	switch fv.Kind() {
+	case reflect.Ptr, reflect.Interface:
+		return fv.IsNil()
+	case reflect.Slice, reflect.Map:
+		return fv.IsNil()
+	case reflect.Struct:
+		// Nullable[T] implements IsZero() and should be skipped when absent.
+		if iz, ok := fv.Interface().(interface{ IsZero() bool }); ok {
+			return iz.IsZero()
+		}
+		return false
+	default:
+		return false
 	}
 }
