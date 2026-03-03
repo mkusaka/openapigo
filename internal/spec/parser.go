@@ -331,32 +331,38 @@ func yamlNodeToJSON(node *yaml.Node) ([]byte, error) {
 
 // yamlNodeToInterface converts a yaml.Node to a Go interface{} suitable for json.Marshal.
 // The visited set tracks alias nodes to prevent infinite recursion from cyclic YAML anchors.
+// A global expansion counter limits total alias expansions to prevent Billion Laughs (YAML bomb) attacks.
 func yamlNodeToInterface(node *yaml.Node) any {
-	return yamlNodeToInterfaceImpl(node, make(map[*yaml.Node]bool))
+	counter := 0
+	return yamlNodeToInterfaceImpl(node, make(map[*yaml.Node]bool), &counter)
 }
 
-func yamlNodeToInterfaceImpl(node *yaml.Node, visited map[*yaml.Node]bool) any {
+// maxAliasExpansions limits total alias expansions to prevent exponential blowup
+// from crafted YAML anchor/alias patterns (Billion Laughs attack).
+const maxAliasExpansions = 10000
+
+func yamlNodeToInterfaceImpl(node *yaml.Node, visited map[*yaml.Node]bool, expansions *int) any {
 	if node == nil {
 		return nil
 	}
 	switch node.Kind {
 	case yaml.DocumentNode:
 		if len(node.Content) > 0 {
-			return yamlNodeToInterfaceImpl(node.Content[0], visited)
+			return yamlNodeToInterfaceImpl(node.Content[0], visited, expansions)
 		}
 		return nil
 	case yaml.MappingNode:
 		m := make(map[string]any, len(node.Content)/2)
 		for i := 0; i+1 < len(node.Content); i += 2 {
 			key := node.Content[i].Value
-			val := yamlNodeToInterfaceImpl(node.Content[i+1], visited)
+			val := yamlNodeToInterfaceImpl(node.Content[i+1], visited, expansions)
 			m[key] = val
 		}
 		return m
 	case yaml.SequenceNode:
 		s := make([]any, len(node.Content))
 		for i, child := range node.Content {
-			s[i] = yamlNodeToInterfaceImpl(child, visited)
+			s[i] = yamlNodeToInterfaceImpl(child, visited, expansions)
 		}
 		return s
 	case yaml.ScalarNode:
@@ -365,8 +371,12 @@ func yamlNodeToInterfaceImpl(node *yaml.Node, visited map[*yaml.Node]bool) any {
 		if visited[node] {
 			return nil // break cycle
 		}
+		*expansions++
+		if *expansions > maxAliasExpansions {
+			return nil // limit reached — stop expanding to prevent DoS
+		}
 		visited[node] = true
-		result := yamlNodeToInterfaceImpl(node.Alias, visited)
+		result := yamlNodeToInterfaceImpl(node.Alias, visited, expansions)
 		delete(visited, node) // backtrack so the same alias can be expanded again elsewhere
 		return result
 	default:

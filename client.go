@@ -157,7 +157,8 @@ func doInternal[Req, Resp any](ctx context.Context, client *Client, endpoint End
 func buildRequest[Req any](ctx context.Context, client *Client, method, pathTmpl string, req Req, codec JSONCodec) (*http.Request, error) {
 	// 1. Build URL with path parameters.
 	path := buildPath(pathTmpl, req)
-	u, err := url.Parse(client.baseURL + path)
+	base := strings.TrimRight(client.baseURL, "/")
+	u, err := url.Parse(base + path)
 	if err != nil {
 		return nil, err
 	}
@@ -208,6 +209,9 @@ func buildRequest[Req any](ctx context.Context, client *Client, method, pathTmpl
 // The media type is determined by the body tag: body:"application/json", body:"multipart/form-data", etc.
 func encodeBody[Req any](bodyMeta *fieldMeta, req Req, codec JSONCodec) (io.Reader, string, error) {
 	rv := reflectValue(req)
+	if !rv.IsValid() || rv.Kind() != reflect.Struct {
+		return nil, "", nil
+	}
 	fv := rv.Field(bodyMeta.index)
 
 	// Only skip nil values (optional/pointer body). Non-nil zero values
@@ -303,7 +307,14 @@ func encodeFormURLEncoded(fv reflect.Value) (io.Reader, string, error) {
 				}
 				fieldVal = fieldVal.Elem()
 			}
-			vals.Set(name, fmt.Sprintf("%v", fieldVal.Interface()))
+			// Handle slices: each element becomes a separate form value (form/explode=true).
+			if fieldVal.Kind() == reflect.Slice {
+				for j := range fieldVal.Len() {
+					vals.Add(name, fmt.Sprintf("%v", fieldVal.Index(j).Interface()))
+				}
+			} else {
+				vals.Set(name, fmt.Sprintf("%v", fieldVal.Interface()))
+			}
 		}
 	default:
 		return nil, "", fmt.Errorf("form body must be a struct or map, got %s", fv.Kind())
