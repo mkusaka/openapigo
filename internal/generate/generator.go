@@ -445,6 +445,9 @@ func (g *Generator) emitOperation(w *strings.Builder, imports map[string]bool, p
 	if hasParams || hasBody {
 		fmt.Fprintf(w, "// %sParams is the request parameters for %s.\ntype %sParams struct {\n", opName, op.OperationID, opName)
 
+		// Track used field names to disambiguate same-name params across locations.
+		usedFieldNames := make(map[string]bool)
+
 		for _, p := range allParams {
 			if p == nil || p.Parameter == nil {
 				continue
@@ -459,6 +462,11 @@ func (g *Generator) emitOperation(w *strings.Builder, imports map[string]bool, p
 				continue
 			}
 			fieldName := ToFieldName(param.Name)
+			if usedFieldNames[fieldName] {
+				// Disambiguate by appending location suffix (e.g., IDQuery, IDPath).
+				fieldName = ToFieldName(param.Name) + ToPascalCase(paramIn)
+			}
+			usedFieldNames[fieldName] = true
 			goType := "string"
 			if param.Schema != nil {
 				goType = g.GoType(param.Schema.Resolved(), opName+fieldName)
@@ -529,9 +537,17 @@ func (g *Generator) requestBodySchema(rb *spec.RequestBody) *spec.Schema {
 }
 
 func (g *Generator) findSuccessResponseSchema(op *spec.Operation) *spec.Schema {
-	for _, code := range []string{"200", "201", "202"} {
-		if resp, ok := op.Responses[code]; ok {
-			return g.responseSchema(resp.Response)
+	// Check all 2xx status codes, preferring lower codes.
+	var codes []string
+	for code := range op.Responses {
+		if len(code) == 3 && code[0] == '2' && code[1] >= '0' && code[1] <= '9' && code[2] >= '0' && code[2] <= '9' {
+			codes = append(codes, code)
+		}
+	}
+	sort.Strings(codes)
+	for _, code := range codes {
+		if s := g.responseSchema(op.Responses[code].Response); s != nil {
+			return s
 		}
 	}
 	return nil
@@ -661,10 +677,10 @@ func (g *Generator) emitEndpoint(w *strings.Builder, imports map[string]bool, pa
 		respType = g.GoType(successSchema.Resolved(), opName+"Response")
 	}
 
-	// Find success codes.
+	// Find success codes (numeric only; skip wildcards like "2XX").
 	var successCodes []string
 	for code := range op.Responses {
-		if len(code) == 3 && code[0] == '2' {
+		if len(code) == 3 && code[0] == '2' && code[1] >= '0' && code[1] <= '9' && code[2] >= '0' && code[2] <= '9' {
 			successCodes = append(successCodes, code)
 		}
 	}

@@ -42,11 +42,17 @@ func ToPascalCase(s string) string {
 		case unicode.IsDigit(r):
 			b.WriteRune(r)
 			upper = true
-		case upper:
-			b.WriteRune(unicode.ToUpper(r))
-			upper = false
+		case unicode.IsLetter(r):
+			if upper {
+				b.WriteRune(unicode.ToUpper(r))
+				upper = false
+			} else {
+				b.WriteRune(r)
+			}
 		default:
-			b.WriteRune(r)
+			// Skip non-letter, non-digit runes (e.g., newlines, punctuation)
+			// to prevent invalid Go identifiers from spec strings.
+			upper = true
 		}
 	}
 	result := b.String()
@@ -153,7 +159,7 @@ func sanitizeTagValue(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {
-		if r == '`' || r == '\n' || r == '\r' {
+		if r == '`' || r == '"' || r == '\n' || r == '\r' {
 			continue
 		}
 		b.WriteRune(r)

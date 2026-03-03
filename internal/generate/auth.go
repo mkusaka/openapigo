@@ -51,6 +51,12 @@ func (g *Generator) generateAuth(source string) string {
 		}
 	}
 
+	// If no auth functions were emitted (e.g., only oauth2/openIdConnect schemes),
+	// skip writing the file to avoid unused imports.
+	if funcDefs.Len() == 0 {
+		return ""
+	}
+
 	// Write imports.
 	w.WriteString("import (\n")
 	importPaths := make([]string, 0, len(imports))
