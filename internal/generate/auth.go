@@ -33,20 +33,26 @@ func (g *Generator) generateAuth(source string) string {
 	}
 	sort.Strings(names)
 
+	usedFuncNames := make(map[string]int)
 	for _, name := range names {
 		ss := g.doc.Components.SecuritySchemes[name]
 		if ss == nil {
 			continue
 		}
+		funcName := "With" + ToPascalCase(name) + "Auth"
+		usedFuncNames[funcName]++
+		if usedFuncNames[funcName] > 1 {
+			funcName = fmt.Sprintf("%s%d", funcName, usedFuncNames[funcName])
+		}
 		switch ss.Type {
 		case "apiKey":
-			emitAPIKeyAuth(&funcDefs, name, ss)
+			emitAPIKeyAuth(&funcDefs, funcName, ss)
 		case "http":
 			if strings.EqualFold(ss.Scheme, "basic") {
-				emitBasicAuth(&funcDefs, name, ss)
+				emitBasicAuth(&funcDefs, funcName, ss)
 				imports["encoding/base64"] = true
 			} else if strings.EqualFold(ss.Scheme, "bearer") {
-				emitBearerAuth(&funcDefs, name, ss)
+				emitBearerAuth(&funcDefs, funcName, ss)
 			}
 		}
 	}
@@ -73,8 +79,7 @@ func (g *Generator) generateAuth(source string) string {
 	return w.String()
 }
 
-func emitAPIKeyAuth(w *strings.Builder, name string, ss *spec.SecurityScheme) {
-	funcName := "With" + ToPascalCase(name) + "Auth"
+func emitAPIKeyAuth(w *strings.Builder, funcName string, ss *spec.SecurityScheme) {
 	comment := sanitizeComment(ss.Description)
 	if comment != "" {
 		fmt.Fprintf(w, "// %s returns a middleware that sets the %q %s parameter.\n// %s\n",
@@ -106,8 +111,7 @@ func emitAPIKeyAuth(w *strings.Builder, name string, ss *spec.SecurityScheme) {
 	fmt.Fprintf(w, "}\n\n")
 }
 
-func emitBasicAuth(w *strings.Builder, name string, ss *spec.SecurityScheme) {
-	funcName := "With" + ToPascalCase(name) + "Auth"
+func emitBasicAuth(w *strings.Builder, funcName string, ss *spec.SecurityScheme) {
 	comment := sanitizeComment(ss.Description)
 	if comment != "" {
 		fmt.Fprintf(w, "// %s returns a middleware that sets HTTP Basic authentication.\n// %s\n",
@@ -124,8 +128,7 @@ func emitBasicAuth(w *strings.Builder, name string, ss *spec.SecurityScheme) {
 	fmt.Fprintf(w, "}\n\n")
 }
 
-func emitBearerAuth(w *strings.Builder, name string, ss *spec.SecurityScheme) {
-	funcName := "With" + ToPascalCase(name) + "Auth"
+func emitBearerAuth(w *strings.Builder, funcName string, ss *spec.SecurityScheme) {
 	comment := sanitizeComment(ss.Description)
 	if comment != "" {
 		fmt.Fprintf(w, "// %s returns a middleware that sets Bearer token authentication.\n// %s\n",

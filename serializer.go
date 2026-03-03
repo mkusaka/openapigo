@@ -98,7 +98,24 @@ func buildPath(tmpl string, req any) string {
 			continue
 		}
 		fv := rv.Field(fm.index)
-		val := formatValue(fv)
+		// Dereference pointer.
+		if fv.Kind() == reflect.Ptr {
+			if fv.IsNil() {
+				continue
+			}
+			fv = fv.Elem()
+		}
+		// OpenAPI simple style: arrays are comma-separated.
+		var val string
+		if fv.Kind() == reflect.Slice {
+			var vals []string
+			for j := range fv.Len() {
+				vals = append(vals, formatValue(fv.Index(j)))
+			}
+			val = strings.Join(vals, ",")
+		} else {
+			val = formatValue(fv)
+		}
 		result = strings.ReplaceAll(result, "{"+fm.name+"}", url.PathEscape(val))
 	}
 	return result
@@ -182,7 +199,16 @@ func setHeaders(header map[string][]string, req any) {
 		if fv.Kind() == reflect.Ptr {
 			fv = fv.Elem()
 		}
-		header[fm.name] = []string{formatValue(fv)}
+		// OpenAPI simple style: arrays are comma-separated.
+		if fv.Kind() == reflect.Slice {
+			var vals []string
+			for j := range fv.Len() {
+				vals = append(vals, formatValue(fv.Index(j)))
+			}
+			header[fm.name] = []string{strings.Join(vals, ",")}
+		} else {
+			header[fm.name] = []string{formatValue(fv)}
+		}
 	}
 }
 

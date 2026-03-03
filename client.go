@@ -399,20 +399,20 @@ func parseSuccess[Resp any](codec JSONCodec, httpResp *http.Response, body []byt
 func parseError(handlers []ErrorHandler, httpResp *http.Response, body []byte) error {
 	// Try exact status match first.
 	for _, h := range handlers {
-		if h.StatusCode == httpResp.StatusCode {
+		if h.StatusCode == httpResp.StatusCode && h.Parse != nil {
 			return h.Parse(httpResp.StatusCode, httpResp.Header, body)
 		}
 	}
 	// Try status range match (e.g., -4 for 4XX).
 	rangeCode := -(httpResp.StatusCode / 100)
 	for _, h := range handlers {
-		if h.StatusCode == rangeCode {
+		if h.StatusCode == rangeCode && h.Parse != nil {
 			return h.Parse(httpResp.StatusCode, httpResp.Header, body)
 		}
 	}
 	// Try default handler (StatusCode == 0).
 	for _, h := range handlers {
-		if h.StatusCode == 0 {
+		if h.StatusCode == 0 && h.Parse != nil {
 			return h.Parse(httpResp.StatusCode, httpResp.Header, body)
 		}
 	}

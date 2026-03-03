@@ -26,6 +26,7 @@ type Generator struct {
 	inlineSchemas []namedSchema           // inline schemas to emit
 	imports       map[string]bool         // import paths needed
 	usedNames     map[string]int          // name → count for collision detection
+	opNames       map[string]string       // operationID → Go name (cached, idempotent)
 }
 
 // Run executes the full generation pipeline.
@@ -53,6 +54,7 @@ func Run(cfg Config) error {
 		schemaNames: make(map[*spec.Schema]string),
 		imports:     make(map[string]bool),
 		usedNames:   make(map[string]int),
+		opNames:     make(map[string]string),
 	}
 
 	// 3. Assign names to component schemas.
@@ -417,13 +419,37 @@ func (g *Generator) generateOperations(source string) string {
 	return w.String()
 }
 
-// opNameFor returns the Go name for an operation, avoiding collisions with schema names.
+// opNameFor returns the Go name for an operation, avoiding collisions with schema names
+// and other operation names. Results are cached so the same operationID always returns
+// the same Go name across generateOperations and generateEndpoints.
 func (g *Generator) opNameFor(op *spec.Operation) string {
+	if cached, ok := g.opNames[op.OperationID]; ok {
+		return cached
+	}
 	opName := ToPascalCase(op.OperationID)
-	if _, collision := g.usedNames[opName]; collision {
+	// Deduplicate against schema names and other operations.
+	if g.nameCollides(opName) {
 		opName += "Op"
 	}
+	base := opName
+	for n := 2; g.nameCollides(opName); n++ {
+		opName = fmt.Sprintf("%s%d", base, n)
+	}
+	g.opNames[op.OperationID] = opName
 	return opName
+}
+
+// nameCollides reports whether name is already used by a schema or operation.
+func (g *Generator) nameCollides(name string) bool {
+	if _, ok := g.usedNames[name]; ok {
+		return true
+	}
+	for _, existing := range g.opNames {
+		if existing == name {
+			return true
+		}
+	}
+	return false
 }
 
 // emitOperation writes request/response structs for an operation.
@@ -443,7 +469,7 @@ func (g *Generator) emitOperation(w *strings.Builder, imports map[string]bool, p
 
 	// --- Params struct ---
 	if hasParams || hasBody {
-		fmt.Fprintf(w, "// %sParams is the request parameters for %s.\ntype %sParams struct {\n", opName, op.OperationID, opName)
+		fmt.Fprintf(w, "// %sParams is the request parameters for %s.\ntype %sParams struct {\n", opName, sanitizeComment(op.OperationID), opName)
 
 		// Track used field names to disambiguate same-name params across locations.
 		usedFieldNames := make(map[string]bool)
@@ -655,9 +681,7 @@ func (g *Generator) generateEndpoints(source string) string {
 	w.WriteString(fileHeader(g.config.Package, source))
 	w.WriteString("\n")
 
-	imports := map[string]bool{
-		"github.com/mkusaka/openapigo": true,
-	}
+	imports := map[string]bool{}
 
 	var epDefs strings.Builder
 
@@ -679,17 +703,24 @@ func (g *Generator) generateEndpoints(source string) string {
 		}
 	}
 
-	// Write imports.
-	w.WriteString("import (\n")
-	importPaths := make([]string, 0, len(imports))
-	for imp := range imports {
-		importPaths = append(importPaths, imp)
+	// Only add openapigo import if endpoints were actually emitted.
+	if epDefs.Len() > 0 {
+		imports["github.com/mkusaka/openapigo"] = true
 	}
-	sort.Strings(importPaths)
-	for _, imp := range importPaths {
-		fmt.Fprintf(&w, "\t%q\n", imp)
+
+	// Write imports (only if non-empty).
+	if len(imports) > 0 {
+		w.WriteString("import (\n")
+		importPaths := make([]string, 0, len(imports))
+		for imp := range imports {
+			importPaths = append(importPaths, imp)
+		}
+		sort.Strings(importPaths)
+		for _, imp := range importPaths {
+			fmt.Fprintf(&w, "\t%q\n", imp)
+		}
+		w.WriteString(")\n\n")
 	}
-	w.WriteString(")\n\n")
 
 	w.WriteString(epDefs.String())
 	return w.String()
@@ -738,7 +769,7 @@ func (g *Generator) emitEndpoint(w *strings.Builder, imports map[string]bool, pa
 		successCodes = []string{"200"}
 	}
 
-	fmt.Fprintf(w, "// %s is the endpoint for %s %s.\n", opName, method, path)
+	fmt.Fprintf(w, "// %s is the endpoint for %s %s.\n", opName, sanitizeComment(method), sanitizeComment(path))
 	if op.Summary != "" {
 		fmt.Fprintf(w, "// %s\n", sanitizeComment(op.Summary))
 	}

@@ -166,27 +166,38 @@ func emitEnumType(w *strings.Builder, typeName string, s *spec.Schema) {
 	goType := "string" // CircleCI only uses string enums.
 	fmt.Fprintf(w, "// %s represents the enum values.\ntype %s %s\n\n", typeName, typeName, goType)
 
-	// Constants.
-	fmt.Fprintf(w, "const (\n")
+	// Pre-compute constant names with collision detection.
+	type enumEntry struct {
+		constName string
+		value     string
+	}
+	var entries []enumEntry
+	usedConsts := make(map[string]int)
 	for _, raw := range s.Enum {
 		var val string
 		if err := json.Unmarshal(raw, &val); err != nil {
 			continue
 		}
 		constName := ToEnumConstName(typeName, val)
-		fmt.Fprintf(w, "\t%s %s = %q\n", constName, typeName, val)
+		usedConsts[constName]++
+		if usedConsts[constName] > 1 {
+			constName = fmt.Sprintf("%s%d", constName, usedConsts[constName])
+		}
+		entries = append(entries, enumEntry{constName: constName, value: val})
+	}
+
+	// Constants.
+	fmt.Fprintf(w, "const (\n")
+	for _, e := range entries {
+		fmt.Fprintf(w, "\t%s %s = %q\n", e.constName, typeName, e.value)
 	}
 	fmt.Fprintf(w, ")\n\n")
 
 	// Values function.
 	fmt.Fprintf(w, "// %sValues returns all valid values of %s.\nfunc %sValues() []%s {\n\treturn []%s{\n",
 		typeName, typeName, typeName, typeName, typeName)
-	for _, raw := range s.Enum {
-		var val string
-		if err := json.Unmarshal(raw, &val); err != nil {
-			continue
-		}
-		fmt.Fprintf(w, "\t\t%s,\n", ToEnumConstName(typeName, val))
+	for _, e := range entries {
+		fmt.Fprintf(w, "\t\t%s,\n", e.constName)
 	}
 	fmt.Fprintf(w, "\t}\n}\n\n")
 }
@@ -215,7 +226,9 @@ func (g *Generator) emitStructType(w *strings.Builder, typeName string, s *spec.
 		if v, ok := prop.Resolved().Extensions["x-go-name"]; ok {
 			var goName string
 			if json.Unmarshal(v, &goName) == nil && goName != "" {
-				fieldName = sanitizeIdentifier(goName)
+				if sanitized := sanitizeIdentifier(goName); sanitized != "" {
+					fieldName = sanitized
+				}
 			}
 		}
 		fieldNames[fieldName]++
@@ -234,7 +247,9 @@ func (g *Generator) emitStructType(w *strings.Builder, typeName string, s *spec.
 		if v, ok := resolved.Extensions["x-go-name"]; ok {
 			var goName string
 			if json.Unmarshal(v, &goName) == nil && goName != "" {
-				fieldName = sanitizeIdentifier(goName)
+				if sanitized := sanitizeIdentifier(goName); sanitized != "" {
+					fieldName = sanitized
+				}
 			}
 		}
 
