@@ -60,9 +60,17 @@ type resolver struct {
 	docCache   map[string]*Document // cached external documents
 	httpClient *http.Client     // reused HTTP client for remote fetches
 	oas31      bool             // true if OAS >= 3.1 (affects $ref sibling keyword handling)
+	anchors    map[string]*Schema // $anchor → schema (OAS 3.1)
 }
 
 func (r *resolver) resolveAll() error {
+	// Build $anchor index for OAS 3.1.
+	if r.oas31 {
+		if err := r.buildAnchorIndex(); err != nil {
+			return err
+		}
+	}
+
 	// Resolve schemas in components.
 	if r.doc.Components != nil {
 		for _, s := range r.doc.Components.Schemas {
@@ -329,6 +337,96 @@ func (r *resolver) resolveSchema(s *Schema) error {
 	return nil
 }
 
+// buildAnchorIndex walks all component schemas and indexes any with $anchor.
+// Returns an error if duplicate $anchor values are found.
+func (r *resolver) buildAnchorIndex() error {
+	if r.anchors == nil {
+		r.anchors = make(map[string]*Schema)
+	}
+	if r.doc.Components == nil {
+		return nil
+	}
+	for _, s := range r.doc.Components.Schemas {
+		if err := r.indexAnchors(s); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// indexAnchors recursively indexes schemas with $anchor.
+// Traversal scope matches resolveSchema to ensure consistency.
+func (r *resolver) indexAnchors(s *Schema) error {
+	if s == nil {
+		return nil
+	}
+	if s.Anchor != "" {
+		if existing, ok := r.anchors[s.Anchor]; ok && existing != s {
+			return fmt.Errorf("duplicate $anchor %q", s.Anchor)
+		}
+		r.anchors[s.Anchor] = s
+	}
+	for _, prop := range s.Properties {
+		if err := r.indexAnchors(prop); err != nil {
+			return err
+		}
+	}
+	if err := r.indexAnchors(s.Items); err != nil {
+		return err
+	}
+	if s.AdditionalProperties != nil {
+		if err := r.indexAnchors(s.AdditionalProperties.Schema); err != nil {
+			return err
+		}
+	}
+	for _, sub := range s.AllOf {
+		if err := r.indexAnchors(sub); err != nil {
+			return err
+		}
+	}
+	for _, sub := range s.OneOf {
+		if err := r.indexAnchors(sub); err != nil {
+			return err
+		}
+	}
+	for _, sub := range s.AnyOf {
+		if err := r.indexAnchors(sub); err != nil {
+			return err
+		}
+	}
+	if err := r.indexAnchors(s.If); err != nil {
+		return err
+	}
+	if err := r.indexAnchors(s.Then); err != nil {
+		return err
+	}
+	if err := r.indexAnchors(s.Else); err != nil {
+		return err
+	}
+	// Traverse dependentSchemas, patternProperties, unevaluated* (consistent with resolveSchema).
+	for _, ds := range s.DependentSchemas {
+		if err := r.indexAnchors(ds); err != nil {
+			return err
+		}
+	}
+	for _, pp := range s.PatternProperties {
+		if err := r.indexAnchors(pp); err != nil {
+			return err
+		}
+	}
+	if s.UnevaluatedProperties != nil {
+		if err := r.indexAnchors(s.UnevaluatedProperties.Schema); err != nil {
+			return err
+		}
+	}
+	if s.UnevaluatedItems != nil {
+		if err := r.indexAnchors(s.UnevaluatedItems.Schema); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // hasSiblingKeywords reports whether a $ref schema has sibling keywords
 // that should be applied in OAS 3.1 mode.
 func hasSiblingKeywords(s *Schema) bool {
@@ -364,25 +462,34 @@ func applySiblingOverrides(dst *Schema, src *Schema) {
 	}
 }
 
-// resolveSchemaRef resolves a $ref string like "#/components/schemas/Pet" or
-// an external ref like "models.json#/components/schemas/Pet".
+// resolveSchemaRef resolves a $ref string like "#/components/schemas/Pet",
+// an anchor ref like "#my-anchor" (OAS 3.1), or an external ref like
+// "models.json#/components/schemas/Pet".
 func (r *resolver) resolveSchemaRef(ref string) (*Schema, error) {
 	// Check for external ref (doesn't start with #).
 	if !strings.HasPrefix(ref, "#") {
 		return r.resolveExternalSchemaRef(ref)
 	}
+	// Try standard JSON Pointer path first.
 	name, err := extractRefName(ref, "schemas")
-	if err != nil {
-		return nil, err
+	if err == nil {
+		if r.doc.Components == nil || r.doc.Components.Schemas == nil {
+			return nil, fmt.Errorf("cannot resolve %q: no components/schemas", ref)
+		}
+		s, ok := r.doc.Components.Schemas[name]
+		if !ok {
+			return nil, fmt.Errorf("cannot resolve %q: schema %q not found", ref, name)
+		}
+		return s, nil
 	}
-	if r.doc.Components == nil || r.doc.Components.Schemas == nil {
-		return nil, fmt.Errorf("cannot resolve %q: no components/schemas", ref)
+	// OAS 3.1: try $anchor lookup for bare fragment refs like "#my-anchor".
+	if r.oas31 && r.anchors != nil {
+		anchor := strings.TrimPrefix(ref, "#")
+		if s, ok := r.anchors[anchor]; ok {
+			return s, nil
+		}
 	}
-	s, ok := r.doc.Components.Schemas[name]
-	if !ok {
-		return nil, fmt.Errorf("cannot resolve %q: schema %q not found", ref, name)
-	}
-	return s, nil
+	return nil, fmt.Errorf("cannot resolve %q: not a valid JSON Pointer or $anchor", ref)
 }
 
 // resolveExternalSchemaRef resolves an external file/URL $ref.
