@@ -23,6 +23,15 @@
         "patternProperties": {
           "^env_": { "type": "string" }
         }
+      },
+      "ConfigWithExtensions": {
+        "type": "object",
+        "properties": {
+          "extensions": { "type": "string" }
+        },
+        "patternProperties": {
+          "^x-": { "type": "string" }
+        }
       }
     }
   }

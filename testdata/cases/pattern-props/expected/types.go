@@ -5,6 +5,7 @@
 package generated
 
 import (
+	"encoding/json"
 	"github.com/mkusaka/openapigo"
 )
 
@@ -13,8 +14,15 @@ var _ = openapigo.RuntimeCompatV0_1
 
 // Config represents the schema.
 type Config struct {
-	Name    string  `json:"name"`
-	Version *string `json:"version,omitzero"`
+	Name       string                     `json:"name"`
+	Version    *string                    `json:"version,omitzero"`
+	Extensions map[string]json.RawMessage `json:"-"`
+}
+
+// ConfigWithExtensions represents the schema.
+type ConfigWithExtensions struct {
+	Extensions  *string                    `json:"extensions,omitzero"`
+	Extensions_ map[string]json.RawMessage `json:"-"`
 }
 
 // Labels maps string keys to values matching a pattern.

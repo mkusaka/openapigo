@@ -379,6 +379,19 @@ func (g *Generator) emitStructType(w *strings.Builder, typeName string, s *spec.
 		fmt.Fprintf(w, "\t%s %s `json:\"%s\"`%s\n", fieldName, wrapped, tag, rwComment)
 	}
 
+	// patternProperties + properties combo: add an extensions field for dynamic keys.
+	// Tagged json:"-" so standard marshal/unmarshal ignores it; populated via custom
+	// UnmarshalJSON when needed (future scope).
+	if len(s.PatternProperties) > 0 {
+		g.imports["encoding/json"] = true
+		extField := "Extensions"
+		// Avoid collision with existing property-derived field names.
+		for fieldNames[extField] > 0 {
+			extField += "_"
+		}
+		fmt.Fprintf(w, "\t%s map[string]json.RawMessage `json:\"-\"`\n", extField)
+	}
+
 	fmt.Fprintf(w, "}\n\n")
 }
 
