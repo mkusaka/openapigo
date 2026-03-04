@@ -45,6 +45,7 @@ type Generator struct {
 	multipartTypeNames map[string]bool         // Go type names that need File for format:binary
 	multipartNameCache map[string]string       // component schema name → generated multipart type name
 	extraTypeDefs      []string                // extra type definitions (e.g., union body structs)
+	unevaluatedEvalKeys map[string][]string    // typeName → sorted evaluated property names (JSON keys)
 }
 
 // Run executes the full generation pipeline.
@@ -89,8 +90,9 @@ func Run(cfg Config) error {
 		usedNames:          make(map[string]int),
 		opNames:            make(map[string]string),
 		usedOpNames:        make(map[string]bool),
-		multipartTypeNames: make(map[string]bool),
-		multipartNameCache: make(map[string]string),
+		multipartTypeNames:  make(map[string]bool),
+		multipartNameCache:  make(map[string]string),
+		unevaluatedEvalKeys: make(map[string][]string),
 	}
 
 	// 3. Assign names to component schemas.
@@ -410,12 +412,22 @@ func (g *Generator) emitSchemaType(w *strings.Builder, goName string, s *spec.Sc
 
 	// Object type (with possible if/then/else).
 	if s.Type == "object" || (s.Type == "" && len(s.Properties) > 0) {
+		hasUneval := !g.config.SkipValidation && s.UnevaluatedProperties != nil && s.UnevaluatedProperties.IsFalse()
+
 		// if/then/else: merge all branch properties into the struct.
+		var effective *spec.Schema
 		if s.If != nil {
-			merged := g.mergeConditionalProperties(s)
-			g.emitStructType(w, goName, merged)
+			effective = g.mergeConditionalProperties(s)
 		} else {
-			g.emitStructType(w, goName, s)
+			effective = s
+		}
+
+		if hasUneval {
+			g.registerUnevaluatedEvalKeys(goName, effective)
+		}
+		g.emitStructType(w, goName, effective)
+		if hasUneval {
+			g.emitUnevaluatedUnmarshalJSON(w, goName, effective)
 		}
 		return
 	}
@@ -458,7 +470,22 @@ func (g *Generator) emitAllOfType(w *strings.Builder, goName string, s *spec.Sch
 	if hasObject {
 		// Merge all properties and emit struct.
 		merged := g.mergeAllOfProperties(resolved)
+		// Propagate unevaluatedProperties to merged schema.
+		if s.UnevaluatedProperties != nil {
+			merged.UnevaluatedProperties = s.UnevaluatedProperties
+		}
+		// Register unevaluated eval keys before emitStructType so rawFieldKeys is added.
+		if !g.config.SkipValidation && s.UnevaluatedProperties != nil && s.UnevaluatedProperties.IsFalse() {
+			g.registerUnevaluatedEvalKeys(goName, merged)
+		}
+
 		g.emitStructType(w, goName, merged)
+
+		// unevaluatedProperties: false → generate UnmarshalJSON to record raw JSON keys.
+		// The Validate() check is emitted by emitValidateMethod using unevaluatedEvalKeys.
+		if !g.config.SkipValidation && s.UnevaluatedProperties != nil && s.UnevaluatedProperties.IsFalse() {
+			g.emitUnevaluatedUnmarshalJSON(w, goName, merged)
+		}
 		return
 	}
 

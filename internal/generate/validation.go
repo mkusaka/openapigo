@@ -126,12 +126,13 @@ func hasDependentSchemasFieldConstraints(s *spec.Schema) bool {
 
 // emitValidateMethod generates a Validate() method for a struct type.
 func (g *Generator) emitValidateMethod(w *strings.Builder, typeName string, s *spec.Schema) {
-	if s == nil || !needsValidation(s) {
+	_, hasUnevaluated := g.unevaluatedEvalKeys[typeName]
+	if s == nil || (!needsValidation(s) && !hasUnevaluated) {
 		return
 	}
 
 	g.imports["github.com/mkusaka/openapigo"] = true
-	if hasValidatableFields(s) || hasDependentSchemasFieldConstraints(s) {
+	if hasValidatableFields(s) || hasDependentSchemasFieldConstraints(s) || hasUnevaluated {
 		g.imports["fmt"] = true
 	}
 
@@ -296,11 +297,26 @@ func (g *Generator) emitValidateMethod(w *strings.Builder, typeName string, s *s
 		}
 	}
 
+	// unevaluatedProperties: false → check for keys not in the evaluated set.
+	if evalKeys, ok := g.unevaluatedEvalKeys[typeName]; ok {
+		fmt.Fprintf(w, "\tevaluated := map[string]bool{\n")
+		for _, k := range evalKeys {
+			fmt.Fprintf(w, "\t\t%q: true,\n", k)
+		}
+		fmt.Fprintf(w, "\t}\n")
+		fmt.Fprintf(w, "\tfor k := range v.rawFieldKeys {\n")
+		fmt.Fprintf(w, "\t\tif !evaluated[k] {\n")
+		fmt.Fprintf(w, "\t\t\terrs = append(errs, openapigo.ValidationError{Field: k, Constraint: \"unevaluatedProperties\", Message: fmt.Sprintf(\"unevaluated property %%q\", k)})\n")
+		fmt.Fprintf(w, "\t\t}\n")
+		fmt.Fprintf(w, "\t}\n")
+	}
+
 	fmt.Fprintf(w, "\tif len(errs) > 0 {\n\t\treturn errs\n\t}\n")
 	fmt.Fprintf(w, "\treturn nil\n}\n\n")
 
 	// Generate UnmarshalJSON that calls Validate() after unmarshalling.
-	if g.config.ValidateOnUnmarshal {
+	// Skip if a custom UnmarshalJSON was already emitted for unevaluatedProperties.
+	if g.config.ValidateOnUnmarshal && !hasUnevaluated {
 		g.imports["encoding/json"] = true
 		fmt.Fprintf(w, "// UnmarshalJSON unmarshals JSON and validates the result.\n")
 		fmt.Fprintf(w, "func (v *%s) UnmarshalJSON(data []byte) error {\n", typeName)
@@ -516,4 +532,44 @@ func (g *Generator) emitPatternVars(w *strings.Builder, typeName string, s *spec
 			}
 		}
 	}
+}
+
+// registerUnevaluatedEvalKeys collects evaluated property names (JSON keys) from a merged
+// schema and stores them for use by emitValidateMethod and emitStructType.
+// Must be called before emitStructType so rawFieldKeys field is generated.
+func (g *Generator) registerUnevaluatedEvalKeys(typeName string, merged *spec.Schema) {
+	evalKeys := make([]string, 0, len(merged.Properties))
+	for propName := range merged.Properties {
+		evalKeys = append(evalKeys, propName)
+	}
+	sortStrings(evalKeys)
+	g.unevaluatedEvalKeys[typeName] = evalKeys
+}
+
+// emitUnevaluatedUnmarshalJSON generates an UnmarshalJSON that records raw JSON keys
+// for unevaluatedProperties checking. The Validate() check is emitted by emitValidateMethod.
+// Used for allOf + unevaluatedProperties: false.
+func (g *Generator) emitUnevaluatedUnmarshalJSON(w *strings.Builder, typeName string, merged *spec.Schema) {
+	g.imports["encoding/json"] = true
+
+	// Generate UnmarshalJSON that records raw keys.
+	fmt.Fprintf(w, "// UnmarshalJSON unmarshals JSON and records raw field keys for unevaluatedProperties checking.\n")
+	fmt.Fprintf(w, "func (v *%s) UnmarshalJSON(data []byte) error {\n", typeName)
+	fmt.Fprintf(w, "\ttype alias %s\n", typeName)
+	fmt.Fprintf(w, "\tvar a alias\n")
+	fmt.Fprintf(w, "\tif err := json.Unmarshal(data, &a); err != nil {\n")
+	fmt.Fprintf(w, "\t\treturn err\n\t}\n")
+	fmt.Fprintf(w, "\t*v = %s(a)\n", typeName)
+	fmt.Fprintf(w, "\tvar raw map[string]json.RawMessage\n")
+	fmt.Fprintf(w, "\tif err := json.Unmarshal(data, &raw); err != nil {\n")
+	fmt.Fprintf(w, "\t\treturn err\n\t}\n")
+	fmt.Fprintf(w, "\tv.rawFieldKeys = make(map[string]bool, len(raw))\n")
+	fmt.Fprintf(w, "\tfor k := range raw {\n")
+	fmt.Fprintf(w, "\t\tv.rawFieldKeys[k] = true\n")
+	fmt.Fprintf(w, "\t}\n")
+	if g.config.ValidateOnUnmarshal {
+		fmt.Fprintf(w, "\tif err := v.Validate(); err != nil {\n")
+		fmt.Fprintf(w, "\t\treturn err\n\t}\n")
+	}
+	fmt.Fprintf(w, "\treturn nil\n}\n\n")
 }

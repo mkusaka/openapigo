@@ -379,6 +379,12 @@ func (g *Generator) emitStructType(w *strings.Builder, typeName string, s *spec.
 		fmt.Fprintf(w, "\t%s %s `json:\"%s\"`%s\n", fieldName, wrapped, tag, rwComment)
 	}
 
+	// unevaluatedProperties: false → add rawFieldKeys for tracking JSON keys at unmarshal time.
+	// Only added when registerUnevaluatedEvalKeys has been called (allOf path).
+	if _, ok := g.unevaluatedEvalKeys[typeName]; ok {
+		fmt.Fprintf(w, "\trawFieldKeys map[string]bool `json:\"-\"`\n")
+	}
+
 	// patternProperties + properties combo: add an extensions field for dynamic keys.
 	// Tagged json:"-" so standard marshal/unmarshal ignores it; populated via custom
 	// UnmarshalJSON when needed (future scope).
@@ -441,6 +447,10 @@ func (g *Generator) allOfType(s *spec.Schema, name string) string {
 	}
 	if hasProps {
 		merged := g.mergeAllOfProperties(resolved)
+		// Propagate unevaluatedProperties from original schema.
+		if s.UnevaluatedProperties != nil {
+			merged.UnevaluatedProperties = s.UnevaluatedProperties
+		}
 		if name != "" {
 			goName := ToPascalCase(name)
 			if _, exists := g.schemaNames[s]; !exists {

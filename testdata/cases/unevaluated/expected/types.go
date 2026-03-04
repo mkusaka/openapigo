@@ -5,6 +5,8 @@
 package generated
 
 import (
+	"encoding/json"
+	"fmt"
 	"github.com/mkusaka/openapigo"
 )
 
@@ -19,7 +21,46 @@ type Base struct {
 
 // Extended represents the schema.
 type Extended struct {
-	ID    int64  `json:"id"`
-	Name  string `json:"name"`
-	Email string `json:"email"`
+	ID           int64           `json:"id"`
+	Name         string          `json:"name"`
+	Email        string          `json:"email"`
+	rawFieldKeys map[string]bool `json:"-"`
+}
+
+// UnmarshalJSON unmarshals JSON and records raw field keys for unevaluatedProperties checking.
+func (v *Extended) UnmarshalJSON(data []byte) error {
+	type alias Extended
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*v = Extended(a)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	v.rawFieldKeys = make(map[string]bool, len(raw))
+	for k := range raw {
+		v.rawFieldKeys[k] = true
+	}
+	return nil
+}
+
+// Validate checks all constraints on Extended.
+func (v Extended) Validate() error {
+	var errs openapigo.ValidationErrors
+	evaluated := map[string]bool{
+		"email": true,
+		"id":    true,
+		"name":  true,
+	}
+	for k := range v.rawFieldKeys {
+		if !evaluated[k] {
+			errs = append(errs, openapigo.ValidationError{Field: k, Constraint: "unevaluatedProperties", Message: fmt.Sprintf("unevaluated property %q", k)})
+		}
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
 }
