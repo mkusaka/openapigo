@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/mkusaka/openapigo/internal/spec"
 )
@@ -26,6 +27,8 @@ type Config struct {
 	ValidateOnUnmarshal bool              // --validate-on-unmarshal: generate UnmarshalJSON that calls Validate()
 	Resolve             bool              // --resolve: enable external $ref resolution
 	AllowHTTP           bool              // --allow-http: allow HTTP (not just HTTPS) for remote refs
+	ResolveHeaders      map[string]string // --resolve-header: custom headers for remote ref fetches
+	ResolveTimeout      time.Duration     // --resolve-timeout: timeout for remote ref fetches
 }
 
 // Generator holds state during code generation.
@@ -63,6 +66,8 @@ func Run(cfg Config) error {
 		err = spec.ResolveWithExternal(doc, spec.ResolveConfig{
 			BaseDir:   filepath.Dir(cfg.Input),
 			AllowHTTP: cfg.AllowHTTP,
+			Headers:   cfg.ResolveHeaders,
+			Timeout:   cfg.ResolveTimeout,
 		})
 	} else {
 		err = spec.Resolve(doc)

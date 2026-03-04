@@ -94,34 +94,64 @@ func TestGenerateGolden(t *testing.T) {
 	root := repoRoot(t)
 
 	tests := []struct {
-		name       string
-		spec       string
+		name        string
+		spec        string
 		expectedDir string
+		resolve     bool
 	}{
 		{
 			"basic-crud",
 			filepath.Join(root, "testdata", "cases", "basic-crud", "spec.json"),
 			filepath.Join(root, "testdata", "cases", "basic-crud", "expected"),
+			false,
 		},
 		{
 			"composition",
 			filepath.Join(root, "testdata", "cases", "composition", "spec.json"),
 			filepath.Join(root, "testdata", "cases", "composition", "expected"),
+			false,
 		},
 		{
 			"readwrite",
 			filepath.Join(root, "testdata", "cases", "readwrite", "spec.json"),
 			filepath.Join(root, "testdata", "cases", "readwrite", "expected"),
+			false,
 		},
 		{
 			"validation",
 			filepath.Join(root, "testdata", "cases", "validation", "spec.json"),
 			filepath.Join(root, "testdata", "cases", "validation", "expected"),
+			false,
 		},
 		{
 			"media-types",
 			filepath.Join(root, "testdata", "cases", "media-types", "spec.json"),
 			filepath.Join(root, "testdata", "cases", "media-types", "expected"),
+			false,
+		},
+		{
+			"multi-file",
+			filepath.Join(root, "testdata", "cases", "multi-file", "spec.json"),
+			filepath.Join(root, "testdata", "cases", "multi-file", "expected"),
+			true,
+		},
+		{
+			"conditional",
+			filepath.Join(root, "testdata", "cases", "conditional", "spec.json"),
+			filepath.Join(root, "testdata", "cases", "conditional", "expected"),
+			false,
+		},
+		{
+			"pattern-props",
+			filepath.Join(root, "testdata", "cases", "pattern-props", "spec.json"),
+			filepath.Join(root, "testdata", "cases", "pattern-props", "expected"),
+			false,
+		},
+		{
+			"unevaluated",
+			filepath.Join(root, "testdata", "cases", "unevaluated", "spec.json"),
+			filepath.Join(root, "testdata", "cases", "unevaluated", "expected"),
+			false,
 		},
 	}
 
@@ -133,6 +163,7 @@ func TestGenerateGolden(t *testing.T) {
 				Input:   tt.spec,
 				Output:  outDir,
 				Package: "generated",
+				Resolve: tt.resolve,
 			})
 			if err != nil {
 				t.Fatalf("generate.Run: %v", err)
