@@ -68,7 +68,60 @@ func needsValidation(s *spec.Schema) bool {
 	if len(s.DependentRequired) > 0 {
 		return true
 	}
+	if hasDependentSchemasConstraints(s) {
+		return true
+	}
 	return hasValidatableFields(s)
+}
+
+// hasDependentSchemasConstraints reports whether dependentSchemas has any
+// entries with required fields or property constraints worth validating.
+func hasDependentSchemasConstraints(s *spec.Schema) bool {
+	for _, ds := range s.DependentSchemas {
+		if ds == nil {
+			continue
+		}
+		if len(ds.Required) > 0 {
+			return true
+		}
+		for _, prop := range ds.Properties {
+			if prop != nil && hasConstraints(prop.Resolved()) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hasDependentSchemasFieldConstraints reports whether dependentSchemas has
+// property constraints that use fmt.Sprintf in the generated code.
+// Required-only and pattern-only entries don't need fmt.
+func hasDependentSchemasFieldConstraints(s *spec.Schema) bool {
+	for _, ds := range s.DependentSchemas {
+		if ds == nil {
+			continue
+		}
+		for _, prop := range ds.Properties {
+			if prop == nil {
+				continue
+			}
+			r := prop.Resolved()
+			// Check for constraints that generate fmt.Sprintf (excludes pattern).
+			if r.MinLength != nil || r.MaxLength != nil {
+				return true
+			}
+			if r.Minimum != nil || r.Maximum != nil || r.ExclusiveMinimum != nil || r.ExclusiveMaximum != nil || r.MultipleOf != nil {
+				return true
+			}
+			if r.MinItems != nil || r.MaxItems != nil {
+				return true
+			}
+			if len(r.Enum) > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // emitValidateMethod generates a Validate() method for a struct type.
@@ -78,7 +131,7 @@ func (g *Generator) emitValidateMethod(w *strings.Builder, typeName string, s *s
 	}
 
 	g.imports["github.com/mkusaka/openapigo"] = true
-	if hasValidatableFields(s) {
+	if hasValidatableFields(s) || hasDependentSchemasFieldConstraints(s) {
 		g.imports["fmt"] = true
 	}
 
@@ -152,6 +205,92 @@ func (g *Generator) emitValidateMethod(w *strings.Builder, typeName string, s *s
 				fmt.Fprintf(w, "\t\t\terrs = append(errs, openapigo.ValidationError{Field: %q, Constraint: \"dependentRequired\", Message: %q})\n",
 					dep, fmt.Sprintf("required when %s is present", key))
 				fmt.Fprintf(w, "\t\t}\n")
+			}
+			fmt.Fprintf(w, "\t}\n")
+		}
+	}
+
+	// dependentSchemas: if trigger property is non-zero, apply the dependent schema's
+	// required fields and property constraints.
+	if hasDependentSchemasConstraints(s) {
+		dsKeys := make([]string, 0, len(s.DependentSchemas))
+		for k := range s.DependentSchemas {
+			dsKeys = append(dsKeys, k)
+		}
+		sortStrings(dsKeys)
+		for _, key := range dsKeys {
+			ds := s.DependentSchemas[key]
+			if ds == nil {
+				continue
+			}
+			// Skip if no useful constraints.
+			if len(ds.Required) == 0 {
+				hasProps := false
+				for _, prop := range ds.Properties {
+					if prop != nil && hasConstraints(prop.Resolved()) {
+						hasProps = true
+						break
+					}
+				}
+				if !hasProps {
+					continue
+				}
+			}
+			keyField := g.resolveParentFieldName(s, key)
+			fmt.Fprintf(w, "\tif !openapigo.IsZero(v.%s) {\n", keyField)
+			// Required fields in the dependent schema.
+			for _, req := range ds.Required {
+				reqField := g.resolveParentFieldName(s, req)
+				fmt.Fprintf(w, "\t\tif openapigo.IsZero(v.%s) {\n", reqField)
+				fmt.Fprintf(w, "\t\t\terrs = append(errs, openapigo.ValidationError{Field: %q, Constraint: \"dependentSchemas\", Message: %q})\n",
+					req, fmt.Sprintf("required when %s is present", key))
+				fmt.Fprintf(w, "\t\t}\n")
+			}
+			// Property constraints in the dependent schema.
+			// Use parent schema's required/nullable to determine accessor.
+			dsPropOrder := make([]string, 0, len(ds.Properties))
+			for pn := range ds.Properties {
+				dsPropOrder = append(dsPropOrder, pn)
+			}
+			sortStrings(dsPropOrder)
+			for _, pn := range dsPropOrder {
+				prop := ds.Properties[pn]
+				if prop == nil {
+					continue
+				}
+				resolved := prop.Resolved()
+				if !hasConstraints(resolved) {
+					continue
+				}
+				// Look up the field in the parent schema to determine pointer-ness and name.
+				parentProp := s.Properties[pn]
+				var parentResolved *spec.Schema
+				if parentProp != nil {
+					parentResolved = parentProp.Resolved()
+				}
+				fieldName := g.resolveParentFieldName(s, pn)
+				req := isRequired(pn, s.Required)
+				nullable := parentResolved != nil && isNullable(parentResolved)
+				isPtr := !req && !nullable
+				if nullable {
+					// Nullable[T]: extract value via Get().
+					tmpVar := "val" + fieldName
+					fmt.Fprintf(w, "\t\tif %s, ok := v.%s.Get(); ok {\n", tmpVar, fieldName)
+					emitFieldConstraints(w, fieldName, tmpVar, resolved, "\t\t\t", g.config.StrictEnums)
+					emitPatternCheck(w, typeName, fieldName, tmpVar, resolved, "\t\t\t")
+					fmt.Fprintf(w, "\t\t}\n")
+				} else if isPtr {
+					// Optional non-nullable: pointer dereference.
+					fmt.Fprintf(w, "\t\tif v.%s != nil {\n", fieldName)
+					accessor := "*v." + fieldName
+					emitFieldConstraints(w, fieldName, accessor, resolved, "\t\t\t", g.config.StrictEnums)
+					emitPatternCheck(w, typeName, fieldName, accessor, resolved, "\t\t\t")
+					fmt.Fprintf(w, "\t\t}\n")
+				} else {
+					accessor := "v." + fieldName
+					emitFieldConstraints(w, fieldName, accessor, resolved, "\t\t", g.config.StrictEnums)
+					emitPatternCheck(w, typeName, fieldName, accessor, resolved, "\t\t")
+				}
 			}
 			fmt.Fprintf(w, "\t}\n")
 		}
@@ -332,6 +471,7 @@ func (g *Generator) emitPatternVars(w *strings.Builder, typeName string, s *spec
 	if s == nil || !needsValidation(s) {
 		return
 	}
+	emitted := make(map[string]string) // varName → pattern value (for dedup + collision detection)
 	for _, propName := range s.PropertyOrder {
 		prop := s.Properties[propName]
 		if prop == nil {
@@ -340,8 +480,40 @@ func (g *Generator) emitPatternVars(w *strings.Builder, typeName string, s *spec
 		resolved := prop.Resolved()
 		if resolved.Pattern != "" {
 			fieldName := g.resolveFieldName(resolved, propName)
-			g.imports["regexp"] = true
-			fmt.Fprintf(w, "var pattern%s%s = regexp.MustCompile(%q)\n", typeName, fieldName, resolved.Pattern)
+			varName := fmt.Sprintf("pattern%s%s", typeName, fieldName)
+			if _, ok := emitted[varName]; !ok {
+				g.imports["regexp"] = true
+				fmt.Fprintf(w, "var %s = regexp.MustCompile(%q)\n", varName, resolved.Pattern)
+				emitted[varName] = resolved.Pattern
+			}
+		}
+	}
+	// Also emit pattern variables for dependentSchemas properties.
+	// Use parent's field name for consistency with emitPatternCheck.
+	for _, ds := range s.DependentSchemas {
+		if ds == nil {
+			continue
+		}
+		for pn, prop := range ds.Properties {
+			if prop == nil {
+				continue
+			}
+			resolved := prop.Resolved()
+			if resolved.Pattern != "" {
+				fieldName := g.resolveParentFieldName(s, pn)
+				varName := fmt.Sprintf("pattern%s%s", typeName, fieldName)
+				if existing, ok := emitted[varName]; ok && existing == resolved.Pattern {
+					continue // same pattern, already emitted
+				} else if ok {
+					// Different pattern on same field — disambiguate.
+					varName = fmt.Sprintf("patternDS%s%s", typeName, fieldName)
+				}
+				if _, ok := emitted[varName]; !ok {
+					g.imports["regexp"] = true
+					fmt.Fprintf(w, "var %s = regexp.MustCompile(%q)\n", varName, resolved.Pattern)
+					emitted[varName] = resolved.Pattern
+				}
+			}
 		}
 	}
 }

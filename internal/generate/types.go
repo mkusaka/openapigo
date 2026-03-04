@@ -691,3 +691,14 @@ func (g *Generator) resolveFieldName(resolved *spec.Schema, propName string) str
 	}
 	return fieldName
 }
+
+// resolveParentFieldName resolves a field name using the parent schema's property
+// definition (for x-go-name), falling back to ToFieldName.
+func (g *Generator) resolveParentFieldName(parent *spec.Schema, propName string) string {
+	if parent != nil {
+		if prop := parent.Properties[propName]; prop != nil {
+			return g.resolveFieldName(prop.Resolved(), propName)
+		}
+	}
+	return ToFieldName(propName)
+}

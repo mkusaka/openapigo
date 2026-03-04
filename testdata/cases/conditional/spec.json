@@ -42,6 +42,36 @@
           "state": ["zip"],
           "zip": ["state"]
         }
+      },
+      "Subscription": {
+        "type": "object",
+        "properties": {
+          "plan": { "type": "string" },
+          "trial_days": { "type": "integer" },
+          "coupon": { "type": "string", "minLength": 3, "maxLength": 20 }
+        },
+        "required": ["plan"],
+        "dependentSchemas": {
+          "trial_days": {
+            "required": ["coupon"],
+            "properties": {
+              "coupon": { "type": "string", "minLength": 5, "pattern": "^[A-Z]+" }
+            }
+          }
+        }
+      },
+      "DepsRequiredOnly": {
+        "type": "object",
+        "properties": {
+          "email": { "type": "string" },
+          "name": { "type": "string" }
+        },
+        "required": ["email"],
+        "dependentSchemas": {
+          "email": {
+            "required": ["name"]
+          }
+        }
       }
     }
   }

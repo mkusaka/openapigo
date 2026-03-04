@@ -5,7 +5,9 @@
 package generated
 
 import (
+	"fmt"
 	"github.com/mkusaka/openapigo"
+	"regexp"
 )
 
 // Ensures generated code is compatible with the runtime library.
@@ -20,12 +22,25 @@ type Address struct {
 	Country string  `json:"country"`
 }
 
+// DepsRequiredOnly represents the schema.
+type DepsRequiredOnly struct {
+	Email string  `json:"email"`
+	Name  *string `json:"name,omitzero"`
+}
+
 // Payment represents the schema.
 type Payment struct {
 	Method      string  `json:"method"`
 	Amount      float64 `json:"amount"`
 	CardNumber  *string `json:"card_number,omitzero"`
 	BankAccount *string `json:"bank_account,omitzero"`
+}
+
+// Subscription represents the schema.
+type Subscription struct {
+	Plan      string  `json:"plan"`
+	TrialDays *int64  `json:"trial_days,omitzero"`
+	Coupon    *string `json:"coupon,omitzero"`
 }
 
 // Validate checks all constraints on Address.
@@ -39,6 +54,52 @@ func (v Address) Validate() error {
 	if !openapigo.IsZero(v.Zip) {
 		if openapigo.IsZero(v.State) {
 			errs = append(errs, openapigo.ValidationError{Field: "state", Constraint: "dependentRequired", Message: "required when zip is present"})
+		}
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
+}
+
+// Validate checks all constraints on DepsRequiredOnly.
+func (v DepsRequiredOnly) Validate() error {
+	var errs openapigo.ValidationErrors
+	if !openapigo.IsZero(v.Email) {
+		if openapigo.IsZero(v.Name) {
+			errs = append(errs, openapigo.ValidationError{Field: "name", Constraint: "dependentSchemas", Message: "required when email is present"})
+		}
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
+}
+
+var patternSubscriptionCoupon = regexp.MustCompile("^[A-Z]+")
+
+// Validate checks all constraints on Subscription.
+func (v Subscription) Validate() error {
+	var errs openapigo.ValidationErrors
+	if v.Coupon != nil {
+		if len(*v.Coupon) < 3 {
+			errs = append(errs, openapigo.ValidationError{Field: "Coupon", Constraint: "minLength", Message: fmt.Sprintf("length %d is less than minimum 3", len(*v.Coupon))})
+		}
+		if len(*v.Coupon) > 20 {
+			errs = append(errs, openapigo.ValidationError{Field: "Coupon", Constraint: "maxLength", Message: fmt.Sprintf("length %d exceeds maximum 20", len(*v.Coupon))})
+		}
+	}
+	if !openapigo.IsZero(v.TrialDays) {
+		if openapigo.IsZero(v.Coupon) {
+			errs = append(errs, openapigo.ValidationError{Field: "coupon", Constraint: "dependentSchemas", Message: "required when trial_days is present"})
+		}
+		if v.Coupon != nil {
+			if len(*v.Coupon) < 5 {
+				errs = append(errs, openapigo.ValidationError{Field: "Coupon", Constraint: "minLength", Message: fmt.Sprintf("length %d is less than minimum 5", len(*v.Coupon))})
+			}
+			if !patternSubscriptionCoupon.MatchString(string(*v.Coupon)) {
+				errs = append(errs, openapigo.ValidationError{Field: "Coupon", Constraint: "pattern", Message: "does not match pattern"})
+			}
 		}
 	}
 	if len(errs) > 0 {
