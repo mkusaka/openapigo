@@ -1,0 +1,316 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "version": "2023-10-16",
+    "title": "Stripe API",
+    "description": "The Stripe REST API. Please see https://stripe.com/docs/api for more details.",
+    "termsOfService": "https://stripe.com/us/terms/",
+    "contact": { "name": "Stripe Dev Platform Team", "url": "https://stripe.com" }
+  },
+  "servers": [{ "url": "https://api.stripe.com" }],
+  "security": [{ "bearerAuth": [] }],
+  "tags": [
+    { "name": "Customers", "description": "Customer objects allow you to perform recurring charges." },
+    { "name": "Charges", "description": "The Charge object represents a single attempt to move money." }
+  ],
+  "paths": {
+    "/v1/customers": {
+      "post": {
+        "summary": "Create a customer",
+        "operationId": "PostCustomers",
+        "tags": ["Customers"],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": { "type": "string" },
+                  "name": { "type": "string", "description": "The customer's full name or business name." },
+                  "description": { "type": "string" },
+                  "phone": { "type": "string" },
+                  "address": { "$ref": "#/components/schemas/address_specs" },
+                  "metadata": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" },
+                    "description": "Set of key-value pairs that you can attach to an object."
+                  },
+                  "expand": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Specifies which fields in the response should be expanded."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/customer" } } }
+          },
+          "default": {
+            "description": "Error response.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/api_errors" } } }
+          }
+        }
+      }
+    },
+    "/v1/customers/{customer}": {
+      "get": {
+        "summary": "Retrieve a customer",
+        "operationId": "GetCustomersCustomer",
+        "tags": ["Customers"],
+        "parameters": [
+          {
+            "name": "customer",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "maxLength": 5000 }
+          },
+          { "$ref": "#/components/parameters/expand" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/customer" } } }
+          },
+          "default": {
+            "description": "Error response.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/api_errors" } } }
+          }
+        }
+      }
+    },
+    "/v1/charges": {
+      "get": {
+        "summary": "List all charges",
+        "description": "Returns a list of charges you've previously created.",
+        "operationId": "GetCharges",
+        "tags": ["Charges"],
+        "parameters": [
+          { "$ref": "#/components/parameters/expand" },
+          {
+            "name": "customer",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string", "maxLength": 5000 },
+            "description": "Only return charges for this customer ID."
+          },
+          {
+            "name": "created",
+            "in": "query",
+            "required": false,
+            "style": "deepObject",
+            "explode": true,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "gt": { "type": "integer" },
+                    "gte": { "type": "integer" },
+                    "lt": { "type": "integer" },
+                    "lte": { "type": "integer" }
+                  }
+                },
+                { "type": "integer" }
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 10 }
+          },
+          {
+            "name": "starting_after",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string", "maxLength": 5000 },
+            "description": "A cursor for pagination. An object ID that defines your place in the list."
+          },
+          {
+            "name": "ending_before",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string", "maxLength": 5000 },
+            "description": "A cursor for pagination. An object ID that defines your place in the list."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["object", "data", "has_more", "url"],
+                  "properties": {
+                    "object": { "type": "string", "enum": ["list"] },
+                    "data": { "type": "array", "items": { "$ref": "#/components/schemas/charge" } },
+                    "has_more": { "type": "boolean" },
+                    "url": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error response.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/api_errors" } } }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": { "type": "http", "scheme": "bearer" }
+    },
+    "parameters": {
+      "expand": {
+        "name": "expand[]",
+        "in": "query",
+        "required": false,
+        "explode": true,
+        "schema": { "type": "array", "items": { "type": "string", "maxLength": 5000 } },
+        "description": "Specifies which fields in the response should be expanded."
+      }
+    },
+    "schemas": {
+      "customer": {
+        "title": "Customer",
+        "description": "This object represents a customer of your business.",
+        "type": "object",
+        "required": ["id", "object", "created", "livemode"],
+        "properties": {
+          "id": { "type": "string", "maxLength": 5000 },
+          "object": { "type": "string", "enum": ["customer"] },
+          "address": { "nullable": true, "$ref": "#/components/schemas/address" },
+          "created": { "type": "integer", "format": "unix-time" },
+          "default_source": {
+            "nullable": true,
+            "description": "ID of the default payment source for the customer.",
+            "anyOf": [
+              { "type": "string", "maxLength": 5000 },
+              { "$ref": "#/components/schemas/card" }
+            ]
+          },
+          "description": { "type": "string", "nullable": true },
+          "email": { "type": "string", "nullable": true },
+          "livemode": { "type": "boolean" },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": { "type": "string", "maxLength": 500 }
+          },
+          "name": { "type": "string", "nullable": true },
+          "phone": { "type": "string", "nullable": true },
+          "currency": { "type": "string", "nullable": true }
+        }
+      },
+      "charge": {
+        "title": "Charge",
+        "description": "The Charge object represents a single attempt to move money into your Stripe account.",
+        "type": "object",
+        "required": ["id", "object", "amount", "created", "currency", "livemode", "paid", "status"],
+        "properties": {
+          "id": { "type": "string", "maxLength": 5000 },
+          "object": { "type": "string", "enum": ["charge"] },
+          "amount": { "type": "integer", "description": "Amount in the smallest currency unit." },
+          "amount_refunded": { "type": "integer" },
+          "captured": { "type": "boolean" },
+          "created": { "type": "integer", "format": "unix-time" },
+          "currency": { "type": "string", "maxLength": 3 },
+          "customer": {
+            "nullable": true,
+            "description": "ID of the customer this charge is for if one exists.",
+            "anyOf": [
+              { "type": "string", "maxLength": 5000 },
+              { "$ref": "#/components/schemas/customer" }
+            ]
+          },
+          "description": { "type": "string", "nullable": true },
+          "failure_code": { "type": "string", "nullable": true },
+          "failure_message": { "type": "string", "nullable": true },
+          "livemode": { "type": "boolean" },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": { "type": "string", "maxLength": 500 }
+          },
+          "paid": { "type": "boolean" },
+          "receipt_email": { "type": "string", "nullable": true },
+          "refunded": { "type": "boolean" },
+          "status": { "type": "string", "enum": ["succeeded", "pending", "failed"] }
+        }
+      },
+      "address": {
+        "title": "Address",
+        "description": "A customer address.",
+        "type": "object",
+        "properties": {
+          "city": { "type": "string", "nullable": true },
+          "country": { "type": "string", "nullable": true },
+          "line1": { "type": "string", "nullable": true },
+          "line2": { "type": "string", "nullable": true },
+          "postal_code": { "type": "string", "nullable": true },
+          "state": { "type": "string", "nullable": true }
+        }
+      },
+      "address_specs": {
+        "title": "AddressSpecs",
+        "type": "object",
+        "properties": {
+          "city": { "type": "string", "maxLength": 5000 },
+          "country": { "type": "string", "maxLength": 5000 },
+          "line1": { "type": "string", "maxLength": 5000 },
+          "line2": { "type": "string", "maxLength": 5000 },
+          "postal_code": { "type": "string", "maxLength": 5000 },
+          "state": { "type": "string", "maxLength": 5000 }
+        }
+      },
+      "card": {
+        "title": "Card",
+        "description": "A card payment source.",
+        "type": "object",
+        "required": ["id", "object", "brand", "exp_month", "exp_year", "last4"],
+        "properties": {
+          "id": { "type": "string", "maxLength": 5000 },
+          "object": { "type": "string", "enum": ["card"] },
+          "brand": { "type": "string", "maxLength": 5000 },
+          "exp_month": { "type": "integer" },
+          "exp_year": { "type": "integer" },
+          "last4": { "type": "string", "maxLength": 4 },
+          "funding": { "type": "string", "nullable": true }
+        }
+      },
+      "api_errors": {
+        "title": "APIErrors",
+        "description": "An error response from the Stripe API.",
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": { "$ref": "#/components/schemas/api_error_body" }
+        }
+      },
+      "api_error_body": {
+        "title": "APIErrorBody",
+        "type": "object",
+        "required": ["type"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["api_error", "card_error", "idempotency_error", "invalid_request_error"]
+          },
+          "code": { "type": "string", "maxLength": 5000 },
+          "message": { "type": "string", "maxLength": 40000 },
+          "param": { "type": "string", "maxLength": 5000 },
+          "charge": { "type": "string", "maxLength": 5000 }
+        }
+      }
+    }
+  }
+}

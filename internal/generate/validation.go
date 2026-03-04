@@ -111,10 +111,11 @@ func (g *Generator) emitValidateMethod(w *strings.Builder, typeName string, s *s
 		// For optional/nullable fields, skip validation if nil and dereference.
 		isPtr := !req && !nullable // optional non-nullable → *T
 		if nullable {
-			fmt.Fprintf(w, "\tif !v.%s.IsZero() {\n", fieldName)
-			accessor := "v." + fieldName + ".Value"
-			emitFieldConstraints(w, fieldName, accessor, resolved, "\t\t", g.config.StrictEnums)
-			emitPatternCheck(w, typeName, fieldName, accessor, resolved, "\t\t")
+			// Nullable[T]: extract value via Get() into a temp variable.
+			tmpVar := "val" + fieldName
+			fmt.Fprintf(w, "\tif %s, ok := v.%s.Get(); ok {\n", tmpVar, fieldName)
+			emitFieldConstraints(w, fieldName, tmpVar, resolved, "\t\t", g.config.StrictEnums)
+			emitPatternCheck(w, typeName, fieldName, tmpVar, resolved, "\t\t")
 			fmt.Fprintf(w, "\t}\n")
 		} else if isPtr {
 			fmt.Fprintf(w, "\tif v.%s != nil {\n", fieldName)
