@@ -9,6 +9,70 @@ import (
 	"github.com/mkusaka/openapigo/internal/spec"
 )
 
+// GoTypeForBody returns the Go type for a request body schema, taking
+// the content type into account. For multipart/form-data, format:binary
+// fields map to openapigo.File instead of []byte.
+// For $ref schemas already registered as component types, a qualified
+// copy (e.g., PetMultipart) is created to avoid changing the original type.
+func (g *Generator) GoTypeForBody(s *spec.Schema, name, contentType string) string {
+	if contentType != "multipart/form-data" {
+		return g.GoType(s, name)
+	}
+
+	if s == nil {
+		return "any"
+	}
+	resolved := s.Resolved()
+	if resolved == nil {
+		return "any"
+	}
+
+	// If this is a component schema already registered, and it has binary
+	// properties, create a qualified inline copy so the original type keeps
+	// []byte for JSON contexts.
+	if existingName, ok := g.schemaNames[resolved]; ok && hasBinaryProps(resolved) {
+		// Return cached multipart name if we already generated one for this schema.
+		if cached, ok := g.multipartNameCache[existingName]; ok {
+			return cached
+		}
+		qualName := g.uniqueName(existingName + "Multipart")
+		g.multipartTypeNames[qualName] = true
+		g.multipartNameCache[existingName] = qualName
+		g.inlineSchemas = append(g.inlineSchemas, namedSchema{name: qualName, schema: resolved})
+		return qualName
+	}
+
+	// For inline schemas, mark the generated type name for multipart treatment.
+	if hasBinaryProps(resolved) {
+		goName := ToPascalCase(name)
+		g.multipartTypeNames[goName] = true
+	}
+
+	return g.GoType(s, name)
+}
+
+// hasBinaryProps returns true if the schema has any direct properties
+// with type:"string" format:"binary", including array items of binary.
+func hasBinaryProps(s *spec.Schema) bool {
+	for _, prop := range s.Properties {
+		if prop == nil {
+			continue
+		}
+		resolved := prop.Resolved()
+		if resolved.Type == "string" && resolved.Format == "binary" {
+			return true
+		}
+		// Check array items for binary.
+		if resolved.Type == "array" && resolved.Items != nil {
+			items := resolved.Items.Resolved()
+			if items.Type == "string" && items.Format == "binary" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // GoType returns the Go type string for a schema.
 // It also returns any type definitions that need to be emitted (e.g., for inline objects).
 func (g *Generator) GoType(s *spec.Schema, name string) string {
@@ -99,6 +163,9 @@ func (g *Generator) stringType(s *spec.Schema) string {
 	case "byte":
 		return "[]byte"
 	case "binary":
+		if g.bodyContentType == "multipart/form-data" {
+			return "openapigo.File"
+		}
 		return "[]byte"
 	default:
 		return "string"

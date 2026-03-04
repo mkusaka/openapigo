@@ -20,14 +20,18 @@ type Config struct {
 
 // Generator holds state during code generation.
 type Generator struct {
-	config        Config
-	doc           *spec.Document
-	schemaNames   map[*spec.Schema]string // schema pointer → Go type name
-	inlineSchemas []namedSchema           // inline schemas to emit
-	imports       map[string]bool         // import paths needed
-	usedNames     map[string]int          // name → count for collision detection
-	opNames       map[string]string       // operationID → Go name (cached, idempotent)
-	usedOpNames   map[string]bool         // set of assigned operation Go names (O(1) lookup)
+	config             Config
+	doc                *spec.Document
+	schemaNames        map[*spec.Schema]string // schema pointer → Go type name
+	inlineSchemas      []namedSchema           // inline schemas to emit
+	imports            map[string]bool         // import paths needed
+	usedNames          map[string]int          // name → count for collision detection
+	opNames            map[string]string       // operationID → Go name (cached, idempotent)
+	usedOpNames        map[string]bool         // set of assigned operation Go names (O(1) lookup)
+	bodyContentType    string                  // set during body type/field emission
+	multipartTypeNames map[string]bool         // Go type names that need File for format:binary
+	multipartNameCache map[string]string       // component schema name → generated multipart type name
+	extraTypeDefs      []string                // extra type definitions (e.g., union body structs)
 }
 
 // Run executes the full generation pipeline.
@@ -55,13 +59,15 @@ func Run(cfg Config) error {
 	}
 
 	g := &Generator{
-		config:      cfg,
-		doc:         doc,
-		schemaNames: make(map[*spec.Schema]string),
-		imports:     make(map[string]bool),
-		usedNames:   make(map[string]int),
-		opNames:     make(map[string]string),
-		usedOpNames: make(map[string]bool),
+		config:             cfg,
+		doc:                doc,
+		schemaNames:        make(map[*spec.Schema]string),
+		imports:            make(map[string]bool),
+		usedNames:          make(map[string]int),
+		opNames:            make(map[string]string),
+		usedOpNames:        make(map[string]bool),
+		multipartTypeNames: make(map[string]bool),
+		multipartNameCache: make(map[string]string),
 	}
 
 	// 3. Assign names to component schemas.
@@ -330,6 +336,12 @@ func (g *Generator) emitSchemaType(w *strings.Builder, goName string, s *spec.Sc
 	}
 	s = s.Resolved()
 
+	// Set multipart context so stringType maps format:binary to File.
+	if g.multipartTypeNames[goName] {
+		g.bodyContentType = "multipart/form-data"
+		defer func() { g.bodyContentType = "" }()
+	}
+
 	// allOf composition.
 	if len(s.AllOf) > 0 {
 		g.emitAllOfType(w, goName, s)
@@ -454,6 +466,11 @@ func (g *Generator) generateOperations(source string) string {
 		w.WriteString(")\n\n")
 	}
 
+	// Write extra type definitions (e.g., union body structs).
+	for _, def := range g.extraTypeDefs {
+		w.WriteString(def)
+	}
+
 	w.WriteString(opDefs.String())
 	return w.String()
 }
@@ -547,14 +564,34 @@ func (g *Generator) emitOperation(w *strings.Builder, imports map[string]bool, p
 		}
 
 		if hasBody {
-			bodySchema, bodyContentType := g.requestBodyInfo(op.RequestBody.RequestBody)
-			if bodySchema != nil {
-				goType := g.GoType(bodySchema.Resolved(), opName+"Body")
-				g.collectImports(imports, bodySchema.Resolved())
-				if !op.RequestBody.RequestBody.Required {
-					goType = "*" + goType
+			entries := g.requestBodyInfoAll(op.RequestBody.RequestBody)
+			if len(entries) > 1 {
+				// Multiple media types — generate a union body struct.
+				unionName := g.uniqueName(opName + "RequestBody")
+				var unionDef strings.Builder
+				fmt.Fprintf(&unionDef, "// %s supports multiple media types for the request body.\ntype %s struct {\n", unionName, unionName)
+				for _, entry := range entries {
+					fieldName := contentTypeFieldName(entry.contentType)
+					goType := g.bodyTypeForEntry(entry, opName, fieldName, imports)
+					// Interface types (io.Reader) are already nil-able; don't wrap in pointer.
+					if goType == "io.Reader" {
+						fmt.Fprintf(&unionDef, "\t%s %s `body:\"%s\"`\n", fieldName, goType, sanitizeTagValue(entry.contentType))
+					} else {
+						fmt.Fprintf(&unionDef, "\t%s *%s `body:\"%s\"`\n", fieldName, goType, sanitizeTagValue(entry.contentType))
+					}
 				}
-				fmt.Fprintf(w, "\tBody %s `body:\"%s\"`\n", goType, sanitizeTagValue(bodyContentType))
+				fmt.Fprintf(&unionDef, "}\n\n")
+				// Register the union struct as an inline type definition.
+				g.extraTypeDefs = append(g.extraTypeDefs, unionDef.String())
+				if op.RequestBody.RequestBody.Required {
+					fmt.Fprintf(w, "\tBody %s `body:\"*\"`\n", unionName)
+				} else {
+					fmt.Fprintf(w, "\tBody *%s `body:\"*,omitzero\"`\n", unionName)
+				}
+			} else if len(entries) == 1 {
+				// Single media type — existing behavior.
+				entry := entries[0]
+				g.emitSingleBodyField(w, entry, opName, imports, op.RequestBody.RequestBody.Required)
 			}
 		}
 
@@ -582,6 +619,79 @@ func (g *Generator) emitOperation(w *strings.Builder, imports map[string]bool, p
 				}
 			}
 		}
+	}
+}
+
+// contentTypeEntry holds a schema and content type pair.
+type contentTypeEntry struct {
+	schema      *spec.Schema
+	contentType string
+}
+
+// requestBodyInfoAll returns all content types with schemas for a request body,
+// in a deterministic order (json first, then known types, then alphabetical).
+func (g *Generator) requestBodyInfoAll(rb *spec.RequestBody) []contentTypeEntry {
+	if rb == nil || rb.Content == nil {
+		return nil
+	}
+	var entries []contentTypeEntry
+	seen := make(map[string]bool)
+	// schemalessTypes are content types that can be emitted without a schema
+	// (they map to a fixed Go type like io.Reader or string).
+	schemalessTypes := map[string]bool{
+		"application/octet-stream": true,
+		"text/plain":               true,
+	}
+
+	// Preferred order.
+	for _, ct := range []string{
+		"application/json",
+		"multipart/form-data",
+		"application/x-www-form-urlencoded",
+		"application/octet-stream",
+		"text/plain",
+	} {
+		mt, ok := rb.Content[ct]
+		if !ok || mt == nil {
+			continue
+		}
+		if mt.Schema != nil || schemalessTypes[ct] {
+			entries = append(entries, contentTypeEntry{schema: mt.Schema, contentType: ct})
+			seen[ct] = true
+		}
+	}
+	// Remaining content types in alphabetical order.
+	var remaining []string
+	for ct := range rb.Content {
+		if !seen[ct] {
+			remaining = append(remaining, ct)
+		}
+	}
+	sort.Strings(remaining)
+	for _, ct := range remaining {
+		mt := rb.Content[ct]
+		if mt != nil && (mt.Schema != nil || schemalessTypes[ct]) {
+			entries = append(entries, contentTypeEntry{schema: mt.Schema, contentType: ct})
+		}
+	}
+	return entries
+}
+
+// contentTypeFieldName returns a Go field name for a content type.
+func contentTypeFieldName(ct string) string {
+	switch ct {
+	case "application/json":
+		return "JSON"
+	case "multipart/form-data":
+		return "Multipart"
+	case "application/x-www-form-urlencoded":
+		return "Form"
+	case "application/octet-stream":
+		return "OctetStream"
+	case "text/plain":
+		return "Text"
+	default:
+		return ToPascalCase(ct)
 	}
 }
 
@@ -614,6 +724,49 @@ func (g *Generator) requestBodyInfo(rb *spec.RequestBody) (*spec.Schema, string)
 		}
 	}
 	return nil, ""
+}
+
+// bodyTypeForEntry returns the Go type string for a single content type entry.
+// Used both for single-body and union-body code paths.
+func (g *Generator) bodyTypeForEntry(entry contentTypeEntry, opName, fieldName string, imports map[string]bool) string {
+	switch entry.contentType {
+	case "text/plain":
+		return "string"
+	case "application/octet-stream":
+		imports["io"] = true
+		return "io.Reader"
+	default:
+		if entry.schema != nil {
+			goType := g.GoTypeForBody(entry.schema, opName+fieldName+"Body", entry.contentType)
+			g.collectImports(imports, entry.schema.Resolved())
+			return goType
+		}
+		return "any"
+	}
+}
+
+// emitSingleBodyField writes a single body field to the param struct.
+func (g *Generator) emitSingleBodyField(w *strings.Builder, entry contentTypeEntry, opName string, imports map[string]bool, required bool) {
+	switch entry.contentType {
+	case "text/plain":
+		goType := "string"
+		if !required {
+			goType = "*string"
+		}
+		fmt.Fprintf(w, "\tBody %s `body:\"%s\"`\n", goType, sanitizeTagValue(entry.contentType))
+	case "application/octet-stream":
+		imports["io"] = true
+		fmt.Fprintf(w, "\tBody io.Reader `body:\"%s\"`\n", sanitizeTagValue(entry.contentType))
+	default:
+		if entry.schema != nil {
+			goType := g.GoTypeForBody(entry.schema, opName+"Body", entry.contentType)
+			g.collectImports(imports, entry.schema.Resolved())
+			if !required {
+				goType = "*" + goType
+			}
+			fmt.Fprintf(w, "\tBody %s `body:\"%s\"`\n", goType, sanitizeTagValue(entry.contentType))
+		}
+	}
 }
 
 func (g *Generator) findSuccessResponseSchema(op *spec.Operation) *spec.Schema {

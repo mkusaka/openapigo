@@ -36,6 +36,7 @@ func TestGenerateAndCompile(t *testing.T) {
 		{"readwrite", filepath.Join(root, "testdata", "cases", "readwrite", "spec.json")},
 		{"validation", filepath.Join(root, "testdata", "cases", "validation", "spec.json")},
 		{"circleci-v2", filepath.Join(root, "testdata", "realworld", "circleci-v2.json")},
+		{"media-types", filepath.Join(root, "testdata", "cases", "media-types", "spec.json")},
 	}
 
 	for _, tt := range tests {

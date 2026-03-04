@@ -205,8 +205,44 @@ func buildRequest[Req any](ctx context.Context, client *Client, method, pathTmpl
 	return httpReq, nil
 }
 
+// ErrAmbiguousMediaType is returned when a union body struct has more than
+// one non-nil media type field set. Exactly one must be populated.
+var ErrAmbiguousMediaType = fmt.Errorf("openapigo: exactly one media type must be set in union body")
+
+// isNilReader reports whether a reflect.Value holding an io.Reader is nil.
+// It handles both nil interface values and typed-nil pointers (e.g.,
+// io.Reader holding a (*bytes.Buffer)(nil)).
+func isNilReader(v reflect.Value) bool {
+	if !v.IsValid() {
+		return true
+	}
+	if v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			return true
+		}
+		// Check for typed-nil: interface wraps a nil pointer/map/slice.
+		elem := v.Elem()
+		return isNilishKind(elem)
+	}
+	if v.Kind() == reflect.Ptr {
+		return v.IsNil()
+	}
+	return false
+}
+
+// isNilishKind reports whether the value is a nil-able kind that is nil.
+func isNilishKind(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Map, reflect.Slice, reflect.Chan, reflect.Func:
+		return v.IsNil()
+	default:
+		return false
+	}
+}
+
 // encodeBody encodes the body field of the request struct.
 // The media type is determined by the body tag: body:"application/json", body:"multipart/form-data", etc.
+// A body:"*" tag indicates a union body struct with multiple media type options.
 func encodeBody[Req any](bodyMeta *fieldMeta, req Req, codec JSONCodec) (io.Reader, string, error) {
 	rv := reflectValue(req)
 	if !rv.IsValid() || rv.Kind() != reflect.Struct {
@@ -221,6 +257,8 @@ func encodeBody[Req any](bodyMeta *fieldMeta, req Req, codec JSONCodec) (io.Read
 	}
 
 	switch bodyMeta.name {
+	case "*":
+		return encodeUnionBody(fv, codec)
 	case "application/json", "":
 		data, err := codec.Marshal(fv.Interface())
 		if err != nil {
@@ -233,6 +271,8 @@ func encodeBody[Req any](bodyMeta *fieldMeta, req Req, codec JSONCodec) (io.Read
 		return encodeMultipartBody(fv)
 	case "application/x-www-form-urlencoded":
 		return encodeFormURLEncoded(fv)
+	case "text/plain":
+		return encodeTextPlain(fv)
 	default:
 		// Unknown media type — attempt JSON encoding.
 		data, err := codec.Marshal(fv.Interface())
@@ -240,6 +280,85 @@ func encodeBody[Req any](bodyMeta *fieldMeta, req Req, codec JSONCodec) (io.Read
 			return nil, "", err
 		}
 		return bytes.NewReader(data), bodyMeta.name, nil
+	}
+}
+
+// ErrNoMediaType is returned when a union body struct has no non-nil
+// media type fields set. At least one must be populated.
+var ErrNoMediaType = fmt.Errorf("openapigo: exactly one media type must be set in union body, but none was provided")
+
+// encodeUnionBody handles body structs with multiple media type options.
+// Each field has a body:"contentType" tag. Exactly one field must be non-nil.
+// If no field is set, ErrNoMediaType is returned; if more than one is set,
+// ErrAmbiguousMediaType is returned.
+func encodeUnionBody(fv reflect.Value, codec JSONCodec) (io.Reader, string, error) {
+	if fv.Kind() == reflect.Ptr {
+		if fv.IsNil() {
+			return nil, "", nil
+		}
+		fv = fv.Elem()
+	}
+	if fv.Kind() != reflect.Struct {
+		return nil, "", fmt.Errorf("union body must be a struct, got %s", fv.Kind())
+	}
+
+	t := fv.Type()
+	var selectedVal reflect.Value
+	var selectedCT string
+	nonNilCount := 0
+
+	for i := range t.NumField() {
+		field := t.Field(i)
+		ct := field.Tag.Get("body")
+		if ct == "" {
+			continue
+		}
+		fieldVal := fv.Field(i)
+		// Handle both regular nil (pointer/slice/map) and typed-nil
+		// (e.g., io.Reader holding a (*bytes.Buffer)(nil)).
+		if fieldVal.Kind() == reflect.Interface {
+			if isNilReader(fieldVal) {
+				continue
+			}
+		} else if isNilValue(fieldVal) {
+			continue
+		}
+		nonNilCount++
+		if nonNilCount > 1 {
+			return nil, "", ErrAmbiguousMediaType
+		}
+		selectedVal = fieldVal
+		selectedCT = ct
+	}
+
+	if nonNilCount == 0 {
+		return nil, "", ErrNoMediaType
+	}
+
+	// Encode using the selected media type.
+	meta := &fieldMeta{name: selectedCT, index: 0}
+	// Create a wrapper struct to reuse encodeBody dispatch logic.
+	switch meta.name {
+	case "application/json", "":
+		data, err := codec.Marshal(selectedVal.Interface())
+		if err != nil {
+			return nil, "", err
+		}
+		return bytes.NewReader(data), "application/json", nil
+	case "application/octet-stream":
+		return encodeBinaryBody(selectedVal)
+	case "multipart/form-data":
+		return encodeMultipartBody(selectedVal)
+	case "application/x-www-form-urlencoded":
+		return encodeFormURLEncoded(selectedVal)
+	case "text/plain":
+		return encodeTextPlain(selectedVal)
+	default:
+		data, err := codec.Marshal(selectedVal.Interface())
+		if err != nil {
+			return nil, "", err
+		}
+		return bytes.NewReader(data), meta.name, nil
 	}
 }
 
@@ -266,8 +385,43 @@ func encodeBinaryBody(fv reflect.Value) (io.Reader, string, error) {
 	return nil, "", fmt.Errorf("binary body must be []byte or io.Reader, got %T", iface)
 }
 
+// encodeTextPlain encodes a string or *string body field as text/plain.
+func encodeTextPlain(fv reflect.Value) (io.Reader, string, error) {
+	if fv.Kind() == reflect.Ptr {
+		if fv.IsNil() {
+			return nil, "", nil
+		}
+		fv = fv.Elem()
+	}
+	s, ok := fv.Interface().(string)
+	if !ok {
+		return nil, "", fmt.Errorf("text/plain body must be string, got %T", fv.Interface())
+	}
+	return strings.NewReader(s), "text/plain", nil
+}
+
+// formFieldName returns the form field name for a struct field.
+// It checks the "form" tag first, then falls back to "json", then to the Go field name.
+// Returns the name and whether the field should be skipped (tag == "-").
+func formFieldName(field reflect.StructField) (name string, skip bool) {
+	name = field.Tag.Get("form")
+	if name == "" {
+		name = field.Tag.Get("json")
+	}
+	if name == "-" {
+		return "", true
+	}
+	if name == "" {
+		name = field.Name
+	}
+	if idx := strings.IndexByte(name, ','); idx != -1 {
+		name = name[:idx]
+	}
+	return name, false
+}
+
 // encodeFormURLEncoded encodes a struct or map as application/x-www-form-urlencoded.
-// For structs, fields tagged with json:"name" become form values; json:"-" fields are skipped.
+// For structs, fields tagged with form:"name" (or json:"name" as fallback) become form values.
 // For maps (from additionalProperties schemas), keys are used as form field names.
 func encodeFormURLEncoded(fv reflect.Value) (io.Reader, string, error) {
 	if fv.Kind() == reflect.Ptr {
@@ -291,15 +445,9 @@ func encodeFormURLEncoded(fv reflect.Value) (io.Reader, string, error) {
 			if isNilValue(fieldVal) {
 				continue
 			}
-			name := field.Tag.Get("json")
-			if name == "-" {
+			name, skip := formFieldName(field)
+			if skip {
 				continue
-			}
-			if name == "" {
-				name = field.Name
-			}
-			if idx := strings.IndexByte(name, ','); idx != -1 {
-				name = name[:idx]
 			}
 			if fieldVal.Kind() == reflect.Ptr {
 				if fieldVal.IsNil() {
@@ -323,8 +471,8 @@ func encodeFormURLEncoded(fv reflect.Value) (io.Reader, string, error) {
 }
 
 // encodeMultipartBody encodes a struct as multipart/form-data.
-// Fields tagged with json:"name" become form fields; json:"-" fields are skipped.
-// Fields of type []byte or io.Reader become file parts.
+// Fields tagged with form:"name" (or json:"name" as fallback) become form fields.
+// Fields of type []byte, io.Reader, or File become file parts.
 // Uses io.Pipe for streaming to avoid buffering entire payloads in memory.
 func encodeMultipartBody(fv reflect.Value) (io.Reader, string, error) {
 	if fv.Kind() == reflect.Ptr {
@@ -362,15 +510,9 @@ func writeMultipartFields(w *multipart.Writer, fv reflect.Value) error {
 			continue
 		}
 
-		name := field.Tag.Get("json")
-		if name == "-" {
-			continue // skip fields explicitly excluded via json:"-"
-		}
-		if name == "" {
-			name = field.Name
-		}
-		if idx := strings.IndexByte(name, ','); idx != -1 {
-			name = name[:idx]
+		name, skip := formFieldName(field)
+		if skip {
+			continue
 		}
 
 		// Check io.Reader on pointer BEFORE dereferencing — pointer receiver methods
@@ -392,9 +534,27 @@ func writeMultipartFields(w *multipart.Writer, fv reflect.Value) error {
 			fieldVal = fieldVal.Elem()
 		}
 
-		// Check if the field is a file ([]byte or io.Reader).
+		// Check if the field is a File, []byte, io.Reader, slice, or scalar.
 		iface := fieldVal.Interface()
-		if b, ok := iface.([]byte); ok {
+		if f, ok := iface.(File); ok {
+			filename := f.Name
+			if filename == "" {
+				filename = name
+			}
+			part, err := w.CreateFormFile(name, filename)
+			if err != nil {
+				return err
+			}
+			if f.Reader != nil {
+				_, copyErr := io.Copy(part, f.Reader)
+				if rc, ok := f.Reader.(io.ReadCloser); ok {
+					rc.Close()
+				}
+				if copyErr != nil {
+					return copyErr
+				}
+			}
+		} else if b, ok := iface.([]byte); ok {
 			part, err := w.CreateFormFile(name, name)
 			if err != nil {
 				return err
@@ -411,10 +571,34 @@ func writeMultipartFields(w *multipart.Writer, fv reflect.Value) error {
 				return err
 			}
 		} else if fieldVal.Kind() == reflect.Slice {
-			for j := range fieldVal.Len() {
-				val := fmt.Sprintf("%v", fieldVal.Index(j).Interface())
-				if err := w.WriteField(name, val); err != nil {
-					return err
+			// Check for []File slices.
+			if fieldVal.Type().Elem() == reflect.TypeOf(File{}) {
+				for j := range fieldVal.Len() {
+					f := fieldVal.Index(j).Interface().(File)
+					filename := f.Name
+					if filename == "" {
+						filename = name
+					}
+					part, err := w.CreateFormFile(name, filename)
+					if err != nil {
+						return err
+					}
+					if f.Reader != nil {
+						_, copyErr := io.Copy(part, f.Reader)
+						if rc, ok := f.Reader.(io.ReadCloser); ok {
+							rc.Close()
+						}
+						if copyErr != nil {
+							return copyErr
+						}
+					}
+				}
+			} else {
+				for j := range fieldVal.Len() {
+					val := fmt.Sprintf("%v", fieldVal.Index(j).Interface())
+					if err := w.WriteField(name, val); err != nil {
+						return err
+					}
 				}
 			}
 		} else {

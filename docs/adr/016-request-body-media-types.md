@@ -18,7 +18,7 @@ OpenAPI operations can accept request bodies in various media types:
 | `application/x-www-form-urlencoded` | HTML form submission | `url.Values` |
 | `multipart/form-data` | File uploads + form fields | `multipart.Writer` |
 | `application/octet-stream` | Raw binary | `io.Reader` |
-| `text/plain` | Plain text | `string` or `[]byte` |
+| `text/plain` | Plain text | `string` |
 | `application/xml` | XML payload | Out of scope (initial version) |
 
 An operation can support **multiple media types** for the same request body, and the consumer must choose which to use.
@@ -163,6 +163,10 @@ func FileFromPath(path string) (File, error) {
 func FileFromBytes(name string, data []byte) File {
     return File{Name: name, Reader: bytes.NewReader(data)}
 }
+
+func FileFromReader(name string, r io.Reader) File {
+    return File{Name: name, Reader: r}
+}
 ```
 
 Runtime behavior:
@@ -288,7 +292,7 @@ requestBody:
 
 ```go
 type CreatePetRequest struct {
-    Body CreatePetRequestBody
+    Body CreatePetRequestBody `body:"*"`
 }
 
 // CreatePetRequestBody supports multiple media types.
@@ -304,7 +308,7 @@ type CreatePetMultipartBody struct {
 }
 ```
 
-The runtime selects the media type based on which field is non-nil. **Typed-nil safety for `io.Reader` fields**: When a multi-media-type union includes an `io.Reader` field (e.g., `application/octet-stream`), the non-nil check uses `isNilReader()` (reflection-based nil check that handles typed-nil interfaces) rather than a simple `!= nil` comparison. This prevents a typed-nil `io.Reader` (e.g., `var r *bytes.Reader; body.Binary = r`) from being misidentified as "set". If **multiple fields** are set, the runtime returns an error (ambiguous media type selection). If **zero fields** are set (all nil): the behavior depends on whether the request body is required. When `requestBody.required: true`, this is an error (no body to send). When `requestBody.required: false` (or absent), no request body is sent (the entire multi-media-type body is optional, and all-nil means "no body"):
+The runtime selects the media type based on which field is non-nil. **Typed-nil safety for `io.Reader` fields**: When a multi-media-type union includes an `io.Reader` field (e.g., `application/octet-stream`), the non-nil check uses `isNilReader()` (reflection-based nil check that handles typed-nil interfaces) rather than a simple `!= nil` comparison. This prevents a typed-nil `io.Reader` (e.g., `var r *bytes.Reader; body.Binary = r`) from being misidentified as "set". If **multiple fields** are set, the runtime returns `ErrAmbiguousMediaType`. If **zero fields** are set (all nil), the runtime returns `ErrNoMediaType` — the user must set exactly one field. For optional request bodies (`requestBody.required: false`), the body field is a pointer; leaving it nil skips the body entirely (no error). Providing a non-nil pointer with all-nil inner fields is always an error:
 
 ```go
 // Usage: JSON
@@ -409,7 +413,7 @@ The `Content-Type` header is **always set automatically** by the runtime based o
 
   Note: ADR-009's type table lists `format: binary` → `[]byte` as the **context-free default**. The context-dependent overrides above take precedence when the generator knows the media type. The generator determines the mapping based on the media type context, not the schema alone.
 
-  **$ref reuse across media types**: When a schema defined via `$ref` (e.g., `FileContent: {type: string, format: binary}`) is used in both `application/json` and `multipart/form-data` contexts, the generator produces **separate Go types** for each context. The naming is **always context-qualified**: `FileContentJSON` ([]byte, for JSON context) and `FileContentUpload` (openapigo.File, for multipart context). No unqualified base-name alias is generated — every type name includes its context suffix. This avoids a stability problem where the alias target could change when new media type usages are added (e.g., adding an `application/octet-stream` usage would change which context is "most common", silently changing the alias's underlying type). **Stability guarantee**: Adding a new media type usage for the same `$ref` does NOT rename existing types — it only adds a new context-qualified type. This prevents non-breaking API spec changes (adding a new media type) from causing breaking Go type name changes.
+  **$ref reuse across media types**: When a schema defined via `$ref` (e.g., `FileContent: {type: string, format: binary}`) is used in both `application/json` and `multipart/form-data` contexts, the generator produces **separate Go types** for each context. The JSON context uses the base type name (e.g., `FileContent` with `[]byte` fields), while the multipart context uses a `Multipart`-suffixed name (e.g., `FileContentMultipart` with `openapigo.File` fields). Name collisions are avoided via `uniqueName()`. **Stability guarantee**: Adding a new media type usage for the same `$ref` does NOT rename existing types — it only adds a new context-qualified type. This prevents non-breaking API spec changes (adding a new media type) from causing breaking Go type name changes.
 - **XML is not supported initially**: declared out of scope. Can be added later with `body:"application/xml"` + xml struct tags.
 
 ### Risks
