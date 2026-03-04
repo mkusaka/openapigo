@@ -24,6 +24,8 @@ type Config struct {
 	FormatMapping       map[string]string // --format-mapping: custom format→type mapping (e.g. "uuid=github.com/google/uuid.UUID")
 	StrictEnums         bool              // --strict-enums: generate validation for non-string enums
 	ValidateOnUnmarshal bool              // --validate-on-unmarshal: generate UnmarshalJSON that calls Validate()
+	Resolve             bool              // --resolve: enable external $ref resolution
+	AllowHTTP           bool              // --allow-http: allow HTTP (not just HTTPS) for remote refs
 }
 
 // Generator holds state during code generation.
@@ -57,7 +59,15 @@ func Run(cfg Config) error {
 	if _, err := spec.DetectVersion(doc); err != nil {
 		return err
 	}
-	if err := spec.Resolve(doc); err != nil {
+	if cfg.Resolve {
+		err = spec.ResolveWithExternal(doc, spec.ResolveConfig{
+			BaseDir:   filepath.Dir(cfg.Input),
+			AllowHTTP: cfg.AllowHTTP,
+		})
+	} else {
+		err = spec.Resolve(doc)
+	}
+	if err != nil {
 		return err
 	}
 

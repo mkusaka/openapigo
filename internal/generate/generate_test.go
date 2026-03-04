@@ -29,16 +29,18 @@ func TestGenerateAndCompile(t *testing.T) {
 	root := repoRoot(t)
 
 	tests := []struct {
-		name string
-		spec string
+		name    string
+		spec    string
+		resolve bool
 	}{
-		{"basic-crud", filepath.Join(root, "testdata", "cases", "basic-crud", "spec.json")},
-		{"composition", filepath.Join(root, "testdata", "cases", "composition", "spec.json")},
-		{"readwrite", filepath.Join(root, "testdata", "cases", "readwrite", "spec.json")},
-		{"validation", filepath.Join(root, "testdata", "cases", "validation", "spec.json")},
-		{"circleci-v2", filepath.Join(root, "testdata", "realworld", "circleci-v2.json")},
-		{"media-types", filepath.Join(root, "testdata", "cases", "media-types", "spec.json")},
-		{"petstore-3.0", filepath.Join(root, "testdata", "realworld", "petstore-3.0.json")},
+		{"basic-crud", filepath.Join(root, "testdata", "cases", "basic-crud", "spec.json"), false},
+		{"composition", filepath.Join(root, "testdata", "cases", "composition", "spec.json"), false},
+		{"readwrite", filepath.Join(root, "testdata", "cases", "readwrite", "spec.json"), false},
+		{"validation", filepath.Join(root, "testdata", "cases", "validation", "spec.json"), false},
+		{"circleci-v2", filepath.Join(root, "testdata", "realworld", "circleci-v2.json"), false},
+		{"media-types", filepath.Join(root, "testdata", "cases", "media-types", "spec.json"), false},
+		{"petstore-3.0", filepath.Join(root, "testdata", "realworld", "petstore-3.0.json"), false},
+		{"multi-file", filepath.Join(root, "testdata", "cases", "multi-file", "spec.json"), true},
 	}
 
 	for _, tt := range tests {
@@ -50,6 +52,7 @@ func TestGenerateAndCompile(t *testing.T) {
 				Input:   tt.spec,
 				Output:  outDir,
 				Package: "generated",
+				Resolve: tt.resolve,
 			})
 			if err != nil {
 				t.Fatalf("generate.Run: %v", err)

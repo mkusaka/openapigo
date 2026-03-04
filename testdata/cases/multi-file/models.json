@@ -1,0 +1,23 @@
+{
+  "components": {
+    "schemas": {
+      "Pet": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64" },
+          "name": { "type": "string" }
+        },
+        "required": ["name"]
+      },
+      "Owner": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64" },
+          "name": { "type": "string" },
+          "email": { "type": "string" }
+        },
+        "required": ["name"]
+      }
+    }
+  }
+}

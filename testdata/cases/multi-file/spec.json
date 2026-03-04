@@ -1,0 +1,74 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Multi-File Test API",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/pets": {
+      "get": {
+        "operationId": "listPets",
+        "responses": {
+          "200": {
+            "description": "List of pets",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "models.json#/components/schemas/Pet"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createPet",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "models.json#/components/schemas/Pet"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "models.json#/components/schemas/Pet"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/owners": {
+      "get": {
+        "operationId": "listOwners",
+        "responses": {
+          "200": {
+            "description": "List of owners",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "models.json#/components/schemas/Owner"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

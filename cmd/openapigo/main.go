@@ -50,6 +50,8 @@ func runGenerate(args []string) {
 	fs.StringVar(&formatMappingRaw, "format-mapping", "", "custom format→type mapping (comma-separated, e.g. uuid=github.com/google/uuid.UUID)")
 	fs.BoolVar(&cfg.StrictEnums, "strict-enums", false, "generate validation for non-string enums")
 	fs.BoolVar(&cfg.ValidateOnUnmarshal, "validate-on-unmarshal", false, "generate UnmarshalJSON that calls Validate()")
+	fs.BoolVar(&cfg.Resolve, "resolve", false, "resolve external $ref (file and URL)")
+	fs.BoolVar(&cfg.AllowHTTP, "allow-http", false, "allow http:// URLs for remote $ref (requires --resolve)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: openapigo generate -i <spec> -o <output> [-package <name>]")
 		fs.PrintDefaults()
