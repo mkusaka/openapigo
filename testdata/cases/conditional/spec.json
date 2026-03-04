@@ -1,0 +1,48 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Conditional Schema Test",
+    "version": "1.0.0"
+  },
+  "paths": {},
+  "components": {
+    "schemas": {
+      "Payment": {
+        "type": "object",
+        "properties": {
+          "method": { "type": "string" },
+          "amount": { "type": "number" },
+          "card_number": { "type": "string" },
+          "bank_account": { "type": "string" }
+        },
+        "required": ["method", "amount"],
+        "if": {
+          "properties": {
+            "method": { "const": "card" }
+          }
+        },
+        "then": {
+          "required": ["card_number"]
+        },
+        "else": {
+          "required": ["bank_account"]
+        }
+      },
+      "Address": {
+        "type": "object",
+        "properties": {
+          "street": { "type": "string" },
+          "city": { "type": "string" },
+          "state": { "type": "string" },
+          "zip": { "type": "string" },
+          "country": { "type": "string" }
+        },
+        "required": ["street", "city", "country"],
+        "dependentRequired": {
+          "state": ["zip"],
+          "zip": ["state"]
+        }
+      }
+    }
+  }
+}

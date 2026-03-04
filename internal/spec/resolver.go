@@ -292,6 +292,39 @@ func (r *resolver) resolveSchema(s *Schema) error {
 			return err
 		}
 	}
+	// Resolve conditional schemas (OAS 3.1).
+	if err := r.resolveSchema(s.If); err != nil {
+		return err
+	}
+	if err := r.resolveSchema(s.Then); err != nil {
+		return err
+	}
+	if err := r.resolveSchema(s.Else); err != nil {
+		return err
+	}
+	// Resolve dependentSchemas.
+	for _, ds := range s.DependentSchemas {
+		if err := r.resolveSchema(ds); err != nil {
+			return err
+		}
+	}
+	// Resolve patternProperties.
+	for _, pp := range s.PatternProperties {
+		if err := r.resolveSchema(pp); err != nil {
+			return err
+		}
+	}
+	// Resolve unevaluatedProperties/Items.
+	if s.UnevaluatedProperties != nil && s.UnevaluatedProperties.Schema != nil {
+		if err := r.resolveSchema(s.UnevaluatedProperties.Schema); err != nil {
+			return err
+		}
+	}
+	if s.UnevaluatedItems != nil && s.UnevaluatedItems.Schema != nil {
+		if err := r.resolveSchema(s.UnevaluatedItems.Schema); err != nil {
+			return err
+		}
+	}
 	r.resolved[s] = true
 	return nil
 }

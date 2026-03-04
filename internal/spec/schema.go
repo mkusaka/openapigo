@@ -29,6 +29,7 @@ type Schema struct {
 
 	// Enum/Const/Default
 	Enum    []json.RawMessage `json:"enum,omitempty" yaml:"enum,omitempty"`
+	Const   json.RawMessage   `json:"const,omitempty" yaml:"const,omitempty"`
 	Default json.RawMessage   `json:"default,omitempty" yaml:"default,omitempty"`
 
 	// Numeric constraints
@@ -42,6 +43,26 @@ type Schema struct {
 	MinLength *int   `json:"minLength,omitempty" yaml:"minLength,omitempty"`
 	MaxLength *int   `json:"maxLength,omitempty" yaml:"maxLength,omitempty"`
 	Pattern   string `json:"pattern,omitempty" yaml:"pattern,omitempty"`
+
+	// Conditional (OAS 3.1 / JSON Schema 2020-12)
+	If   *Schema `json:"if,omitempty" yaml:"if,omitempty"`
+	Then *Schema `json:"then,omitempty" yaml:"then,omitempty"`
+	Else *Schema `json:"else,omitempty" yaml:"else,omitempty"`
+
+	// Dependent keywords (OAS 3.1 / JSON Schema 2020-12)
+	DependentRequired map[string][]string  `json:"dependentRequired,omitempty" yaml:"dependentRequired,omitempty"`
+	DependentSchemas  map[string]*Schema   `json:"dependentSchemas,omitempty" yaml:"dependentSchemas,omitempty"`
+
+	// Pattern properties (OAS 3.1 / JSON Schema 2020-12)
+	PatternProperties map[string]*Schema `json:"patternProperties,omitempty" yaml:"patternProperties,omitempty"`
+
+	// Unevaluated keywords (OAS 3.1 / JSON Schema 2020-12)
+	UnevaluatedProperties *AdditionalProperties `json:"unevaluatedProperties,omitempty" yaml:"unevaluatedProperties,omitempty"`
+	UnevaluatedItems      *AdditionalProperties `json:"unevaluatedItems,omitempty" yaml:"unevaluatedItems,omitempty"`
+
+	// JSON Schema identity (OAS 3.1)
+	ID     string `json:"$id,omitempty" yaml:"$id,omitempty"`
+	Anchor string `json:"$anchor,omitempty" yaml:"$anchor,omitempty"`
 
 	// OAS 3.0 nullable
 	Nullable bool `json:"nullable,omitempty" yaml:"nullable,omitempty"`

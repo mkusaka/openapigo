@@ -471,6 +471,64 @@ func (g *Generator) mergeAllOfProperties(schemas []*spec.Schema) *spec.Schema {
 	return merged
 }
 
+// mergeConditionalProperties merges properties from a schema's if/then/else
+// branches into the base schema. Properties from branches are all optional
+// (not added to required) since conditional schemas determine which are needed.
+func (g *Generator) mergeConditionalProperties(s *spec.Schema) *spec.Schema {
+	merged := &spec.Schema{
+		Type:       s.Type,
+		Properties: make(map[string]*spec.Schema),
+		Required:   append([]string(nil), s.Required...),
+		// Preserve conditional metadata for validation.
+		If:                s.If,
+		Then:              s.Then,
+		Else:              s.Else,
+		DependentRequired: s.DependentRequired,
+	}
+	merged.PropertyOrder = append(merged.PropertyOrder, s.PropertyOrder...)
+
+	// Copy base properties.
+	for name, prop := range s.Properties {
+		merged.Properties[name] = prop
+	}
+
+	// Merge then/else properties (as optional, not adding to required).
+	for _, branch := range []*spec.Schema{s.Then, s.Else} {
+		if branch == nil {
+			continue
+		}
+		resolved := branch
+		if branch.Ref != "" {
+			resolved = branch.Resolved()
+		}
+		for name, prop := range resolved.Properties {
+			if _, exists := merged.Properties[name]; !exists {
+				merged.Properties[name] = prop
+				merged.PropertyOrder = append(merged.PropertyOrder, name)
+			}
+		}
+	}
+
+	return merged
+}
+
+// emitPatternPropsMapType emits a type alias for a schema with only patternProperties.
+// Single pattern + single value type → map[string]T.
+// Multiple patterns or mixed types → map[string]json.RawMessage.
+func (g *Generator) emitPatternPropsMapType(w *strings.Builder, goName string, s *spec.Schema) {
+	if len(s.PatternProperties) == 1 {
+		// Single pattern — use the value type.
+		for _, valSchema := range s.PatternProperties {
+			valType := g.GoType(valSchema.Resolved(), goName+"Value")
+			fmt.Fprintf(w, "// %s maps string keys to values matching a pattern.\ntype %s = map[string]%s\n\n", goName, goName, valType)
+			return
+		}
+	}
+	// Multiple patterns — fall back to json.RawMessage.
+	g.imports["encoding/json"] = true
+	fmt.Fprintf(w, "// %s maps string keys to values matching patterns.\ntype %s = map[string]json.RawMessage\n\n", goName, goName)
+}
+
 // namedSchema pairs a Go name with its schema for deferred emission.
 type namedSchema struct {
 	name   string

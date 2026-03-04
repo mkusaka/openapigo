@@ -397,9 +397,21 @@ func (g *Generator) emitSchemaType(w *strings.Builder, goName string, s *spec.Sc
 		return
 	}
 
-	// Object type.
+	// patternProperties only (no regular properties) — map type.
+	if len(s.PatternProperties) > 0 && len(s.Properties) == 0 {
+		g.emitPatternPropsMapType(w, goName, s)
+		return
+	}
+
+	// Object type (with possible if/then/else).
 	if s.Type == "object" || (s.Type == "" && len(s.Properties) > 0) {
-		g.emitStructType(w, goName, s)
+		// if/then/else: merge all branch properties into the struct.
+		if s.If != nil {
+			merged := g.mergeConditionalProperties(s)
+			g.emitStructType(w, goName, merged)
+		} else {
+			g.emitStructType(w, goName, s)
+		}
 		return
 	}
 

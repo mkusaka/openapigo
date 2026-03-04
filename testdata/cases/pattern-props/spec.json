@@ -1,0 +1,29 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Pattern Properties Test",
+    "version": "1.0.0"
+  },
+  "paths": {},
+  "components": {
+    "schemas": {
+      "Labels": {
+        "type": "object",
+        "patternProperties": {
+          "^x-": { "type": "string" }
+        }
+      },
+      "Config": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "version": { "type": "string" }
+        },
+        "required": ["name"],
+        "patternProperties": {
+          "^env_": { "type": "string" }
+        }
+      }
+    }
+  }
+}

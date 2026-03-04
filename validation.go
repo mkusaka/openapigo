@@ -2,6 +2,7 @@ package openapigo
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -38,6 +39,15 @@ func (e ValidationErrors) Error() string {
 		b.WriteString(ve.Error())
 	}
 	return b.String()
+}
+
+// IsZero reports whether a value is the zero value for its type.
+// Used by generated dependentRequired validation code.
+func IsZero(v any) bool {
+	if v == nil {
+		return true
+	}
+	return reflect.ValueOf(v).IsZero()
 }
 
 // AddFieldPrefix prepends a field path prefix to all errors in the collection.

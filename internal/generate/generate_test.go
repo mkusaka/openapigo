@@ -41,6 +41,9 @@ func TestGenerateAndCompile(t *testing.T) {
 		{"media-types", filepath.Join(root, "testdata", "cases", "media-types", "spec.json"), false},
 		{"petstore-3.0", filepath.Join(root, "testdata", "realworld", "petstore-3.0.json"), false},
 		{"multi-file", filepath.Join(root, "testdata", "cases", "multi-file", "spec.json"), true},
+		{"conditional", filepath.Join(root, "testdata", "cases", "conditional", "spec.json"), false},
+		{"pattern-props", filepath.Join(root, "testdata", "cases", "pattern-props", "spec.json"), false},
+		{"unevaluated", filepath.Join(root, "testdata", "cases", "unevaluated", "spec.json"), false},
 	}
 
 	for _, tt := range tests {

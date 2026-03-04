@@ -25,6 +25,9 @@ func hasConstraints(s *spec.Schema) bool {
 	if len(s.Enum) > 0 {
 		return true
 	}
+	if len(s.DependentRequired) > 0 {
+		return true
+	}
 	return false
 }
 
@@ -62,6 +65,9 @@ func needsValidation(s *spec.Schema) bool {
 	if s.Type != "object" && len(s.Properties) == 0 {
 		return false
 	}
+	if len(s.DependentRequired) > 0 {
+		return true
+	}
 	return hasValidatableFields(s)
 }
 
@@ -72,7 +78,9 @@ func (g *Generator) emitValidateMethod(w *strings.Builder, typeName string, s *s
 	}
 
 	g.imports["github.com/mkusaka/openapigo"] = true
-	g.imports["fmt"] = true
+	if hasValidatableFields(s) {
+		g.imports["fmt"] = true
+	}
 
 	fmt.Fprintf(w, "// Validate checks all constraints on %s.\nfunc (v %s) Validate() error {\n", typeName, typeName)
 	fmt.Fprintf(w, "\tvar errs openapigo.ValidationErrors\n")
@@ -118,6 +126,33 @@ func (g *Generator) emitValidateMethod(w *strings.Builder, typeName string, s *s
 			accessor := "v." + fieldName
 			emitFieldConstraints(w, fieldName, accessor, resolved, "\t", g.config.StrictEnums)
 			emitPatternCheck(w, typeName, fieldName, accessor, resolved, "\t")
+		}
+	}
+
+	// dependentRequired: if property X is non-zero, check that dependent properties are non-zero.
+	if len(s.DependentRequired) > 0 {
+		// Sort keys for deterministic output.
+		depKeys := make([]string, 0, len(s.DependentRequired))
+		for k := range s.DependentRequired {
+			depKeys = append(depKeys, k)
+		}
+		sortStrings(depKeys)
+		for _, key := range depKeys {
+			deps := s.DependentRequired[key]
+			if len(deps) == 0 {
+				continue
+			}
+			keyField := ToFieldName(key)
+			// Check if the trigger property is present (non-zero).
+			fmt.Fprintf(w, "\tif !openapigo.IsZero(v.%s) {\n", keyField)
+			for _, dep := range deps {
+				depField := ToFieldName(dep)
+				fmt.Fprintf(w, "\t\tif openapigo.IsZero(v.%s) {\n", depField)
+				fmt.Fprintf(w, "\t\t\terrs = append(errs, openapigo.ValidationError{Field: %q, Constraint: \"dependentRequired\", Message: %q})\n",
+					dep, fmt.Sprintf("required when %s is present", key))
+				fmt.Fprintf(w, "\t\t}\n")
+			}
+			fmt.Fprintf(w, "\t}\n")
 		}
 	}
 
