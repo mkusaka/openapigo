@@ -150,6 +150,10 @@ func (g *Generator) goTypeInner(s *spec.Schema, name string) string {
 }
 
 func (g *Generator) stringType(s *spec.Schema) string {
+	// Custom format mapping takes priority.
+	if mapped := g.resolveFormatMapping(s.Format); mapped != "" {
+		return mapped
+	}
 	switch s.Format {
 	case "date-time":
 		g.imports["time"] = true
@@ -170,6 +174,31 @@ func (g *Generator) stringType(s *spec.Schema) string {
 	default:
 		return "string"
 	}
+}
+
+// resolveFormatMapping checks Config.FormatMapping for a custom type override.
+// Value format: "import/path.TypeName" or just "TypeName".
+func (g *Generator) resolveFormatMapping(format string) string {
+	if format == "" || len(g.config.FormatMapping) == 0 {
+		return ""
+	}
+	fullType, ok := g.config.FormatMapping[format]
+	if !ok {
+		return ""
+	}
+	// Parse "import/path.TypeName" — last dot separates package from type.
+	if dotIdx := strings.LastIndex(fullType, "."); dotIdx > 0 {
+		importPath := fullType[:dotIdx]
+		typeName := fullType[dotIdx+1:]
+		g.imports[importPath] = true
+		// Use the last segment of the import path as the package alias.
+		pkg := importPath
+		if slashIdx := strings.LastIndex(importPath, "/"); slashIdx >= 0 {
+			pkg = importPath[slashIdx+1:]
+		}
+		return pkg + "." + typeName
+	}
+	return fullType
 }
 
 func (g *Generator) integerType(s *spec.Schema) string {

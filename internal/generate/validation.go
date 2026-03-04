@@ -105,27 +105,41 @@ func (g *Generator) emitValidateMethod(w *strings.Builder, typeName string, s *s
 		if nullable {
 			fmt.Fprintf(w, "\tif !v.%s.IsZero() {\n", fieldName)
 			accessor := "v." + fieldName + ".Value"
-			emitFieldConstraints(w, fieldName, accessor, resolved, "\t\t")
+			emitFieldConstraints(w, fieldName, accessor, resolved, "\t\t", g.config.StrictEnums)
 			emitPatternCheck(w, typeName, fieldName, accessor, resolved, "\t\t")
 			fmt.Fprintf(w, "\t}\n")
 		} else if isPtr {
 			fmt.Fprintf(w, "\tif v.%s != nil {\n", fieldName)
 			accessor := "*v." + fieldName
-			emitFieldConstraints(w, fieldName, accessor, resolved, "\t\t")
+			emitFieldConstraints(w, fieldName, accessor, resolved, "\t\t", g.config.StrictEnums)
 			emitPatternCheck(w, typeName, fieldName, accessor, resolved, "\t\t")
 			fmt.Fprintf(w, "\t}\n")
 		} else {
 			accessor := "v." + fieldName
-			emitFieldConstraints(w, fieldName, accessor, resolved, "\t")
+			emitFieldConstraints(w, fieldName, accessor, resolved, "\t", g.config.StrictEnums)
 			emitPatternCheck(w, typeName, fieldName, accessor, resolved, "\t")
 		}
 	}
 
 	fmt.Fprintf(w, "\tif len(errs) > 0 {\n\t\treturn errs\n\t}\n")
 	fmt.Fprintf(w, "\treturn nil\n}\n\n")
+
+	// Generate UnmarshalJSON that calls Validate() after unmarshalling.
+	if g.config.ValidateOnUnmarshal {
+		g.imports["encoding/json"] = true
+		fmt.Fprintf(w, "// UnmarshalJSON unmarshals JSON and validates the result.\n")
+		fmt.Fprintf(w, "func (v *%s) UnmarshalJSON(data []byte) error {\n", typeName)
+		fmt.Fprintf(w, "\ttype alias %s\n", typeName)
+		fmt.Fprintf(w, "\tvar a alias\n")
+		fmt.Fprintf(w, "\tif err := json.Unmarshal(data, &a); err != nil {\n")
+		fmt.Fprintf(w, "\t\treturn err\n\t}\n")
+		fmt.Fprintf(w, "\t*v = %s(a)\n", typeName)
+		fmt.Fprintf(w, "\treturn v.Validate()\n")
+		fmt.Fprintf(w, "}\n\n")
+	}
 }
 
-func emitFieldConstraints(w *strings.Builder, fieldName, accessor string, s *spec.Schema, indent string) {
+func emitFieldConstraints(w *strings.Builder, fieldName, accessor string, s *spec.Schema, indent string, strictEnums bool) {
 	switch s.Type {
 	case "string":
 		emitStringConstraints(w, fieldName, accessor, s, indent)
@@ -135,8 +149,8 @@ func emitFieldConstraints(w *strings.Builder, fieldName, accessor string, s *spe
 		emitArrayConstraints(w, fieldName, accessor, s, indent)
 	}
 
-	// Enum validation for any type.
-	if len(s.Enum) > 0 && s.Type == "string" {
+	// Enum validation: string enums by default, all types with strictEnums.
+	if len(s.Enum) > 0 && (s.Type == "string" || strictEnums) {
 		emitEnumValidation(w, fieldName, accessor, s, indent)
 	}
 }
@@ -210,23 +224,60 @@ func emitArrayConstraints(w *strings.Builder, fieldName, accessor string, s *spe
 }
 
 func emitEnumValidation(w *strings.Builder, fieldName, accessor string, s *spec.Schema, indent string) {
-	var vals []string
-	for _, raw := range s.Enum {
-		var v string
-		if json.Unmarshal(raw, &v) == nil {
-			vals = append(vals, fmt.Sprintf("%q", v))
+	switch s.Type {
+	case "string":
+		var vals []string
+		for _, raw := range s.Enum {
+			var v string
+			if json.Unmarshal(raw, &v) == nil {
+				vals = append(vals, fmt.Sprintf("%q", v))
+			}
 		}
+		if len(vals) == 0 {
+			return
+		}
+		// Use string() cast to handle named string types (e.g., PetStatus).
+		fmt.Fprintf(w, "%sswitch string(%s) {\n", indent, accessor)
+		fmt.Fprintf(w, "%scase %s:\n%s\t// valid\n", indent, strings.Join(vals, ", "), indent)
+		fmt.Fprintf(w, "%sdefault:\n", indent)
+		fmt.Fprintf(w, "%s\terrs = append(errs, openapigo.ValidationError{Field: %q, Constraint: \"enum\", Message: fmt.Sprintf(\"invalid value %%q\", %s)})\n",
+			indent, fieldName, accessor)
+		fmt.Fprintf(w, "%s}\n", indent)
+	case "integer":
+		var vals []string
+		for _, raw := range s.Enum {
+			var v int64
+			if json.Unmarshal(raw, &v) == nil {
+				vals = append(vals, fmt.Sprintf("%d", v))
+			}
+		}
+		if len(vals) == 0 {
+			return
+		}
+		fmt.Fprintf(w, "%sswitch int64(%s) {\n", indent, accessor)
+		fmt.Fprintf(w, "%scase %s:\n%s\t// valid\n", indent, strings.Join(vals, ", "), indent)
+		fmt.Fprintf(w, "%sdefault:\n", indent)
+		fmt.Fprintf(w, "%s\terrs = append(errs, openapigo.ValidationError{Field: %q, Constraint: \"enum\", Message: fmt.Sprintf(\"invalid value %%v\", %s)})\n",
+			indent, fieldName, accessor)
+		fmt.Fprintf(w, "%s}\n", indent)
+	case "number":
+		var vals []string
+		for _, raw := range s.Enum {
+			var v float64
+			if json.Unmarshal(raw, &v) == nil {
+				vals = append(vals, fmt.Sprintf("%v", v))
+			}
+		}
+		if len(vals) == 0 {
+			return
+		}
+		fmt.Fprintf(w, "%sswitch float64(%s) {\n", indent, accessor)
+		fmt.Fprintf(w, "%scase %s:\n%s\t// valid\n", indent, strings.Join(vals, ", "), indent)
+		fmt.Fprintf(w, "%sdefault:\n", indent)
+		fmt.Fprintf(w, "%s\terrs = append(errs, openapigo.ValidationError{Field: %q, Constraint: \"enum\", Message: fmt.Sprintf(\"invalid value %%v\", %s)})\n",
+			indent, fieldName, accessor)
+		fmt.Fprintf(w, "%s}\n", indent)
 	}
-	if len(vals) == 0 {
-		return
-	}
-	// Use string() cast to handle named string types (e.g., PetStatus).
-	fmt.Fprintf(w, "%sswitch string(%s) {\n", indent, accessor)
-	fmt.Fprintf(w, "%scase %s:\n%s\t// valid\n", indent, strings.Join(vals, ", "), indent)
-	fmt.Fprintf(w, "%sdefault:\n", indent)
-	fmt.Fprintf(w, "%s\terrs = append(errs, openapigo.ValidationError{Field: %q, Constraint: \"enum\", Message: fmt.Sprintf(\"invalid value %%q\", %s)})\n",
-		indent, fieldName, accessor)
-	fmt.Fprintf(w, "%s}\n", indent)
 }
 
 // sortStrings sorts a string slice in place.

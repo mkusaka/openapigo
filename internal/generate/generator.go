@@ -16,6 +16,14 @@ type Config struct {
 	Input   string // path to OpenAPI spec
 	Output  string // output directory
 	Package string // Go package name
+
+	// Optional flags
+	SkipValidation      bool              // --skip-validation: skip Validate() method generation
+	NoReadWriteTypes    bool              // --no-read-write-types: skip Request/Response variant generation
+	DryRun              bool              // --dry-run: print file names/sizes without writing
+	FormatMapping       map[string]string // --format-mapping: custom format→type mapping (e.g. "uuid=github.com/google/uuid.UUID")
+	StrictEnums         bool              // --strict-enums: generate validation for non-string enums
+	ValidateOnUnmarshal bool              // --validate-on-unmarshal: generate UnmarshalJSON that calls Validate()
 }
 
 // Generator holds state during code generation.
@@ -94,6 +102,19 @@ func Run(cfg Config) error {
 	}
 	if authCode != "" {
 		files["auth.go"] = authCode
+	}
+
+	// Dry-run: just print file names and sizes.
+	if cfg.DryRun {
+		fileNames := make([]string, 0, len(files))
+		for name := range files {
+			fileNames = append(fileNames, name)
+		}
+		sort.Strings(fileNames)
+		for _, name := range fileNames {
+			fmt.Printf("%s/%s (%d bytes)\n", cfg.Output, name, len(files[name]))
+		}
+		return nil
 	}
 
 	// Clean stale generated files before writing new ones.
@@ -276,8 +297,10 @@ func (g *Generator) generateTypes(source string) string {
 		goName := g.schemaNames[s]
 		g.emitSchemaType(&typeDefs, goName, s)
 		// Emit Request/Response variants for schemas with readOnly/writeOnly.
-		if resolved := s.Resolved(); resolved != nil && (resolved.Type == "object" || len(resolved.Properties) > 0) {
-			g.emitReadWriteVariants(&typeDefs, goName, resolved)
+		if !g.config.NoReadWriteTypes {
+			if resolved := s.Resolved(); resolved != nil && (resolved.Type == "object" || len(resolved.Properties) > 0) {
+				g.emitReadWriteVariants(&typeDefs, goName, resolved)
+			}
 		}
 		allSchemas = append(allSchemas, schemaEntry{goName, s})
 	}
@@ -298,18 +321,22 @@ func (g *Generator) generateTypes(source string) string {
 		emitted[ns.name] = true
 		g.emitSchemaType(&typeDefs, ns.name, ns.schema)
 		// Emit Request/Response variants for inline schemas too.
-		if resolved := ns.schema.Resolved(); resolved != nil && (resolved.Type == "object" || len(resolved.Properties) > 0) {
-			g.emitReadWriteVariants(&typeDefs, ns.name, resolved)
+		if !g.config.NoReadWriteTypes {
+			if resolved := ns.schema.Resolved(); resolved != nil && (resolved.Type == "object" || len(resolved.Properties) > 0) {
+				g.emitReadWriteVariants(&typeDefs, ns.name, resolved)
+			}
 		}
 		allSchemas = append(allSchemas, schemaEntry{ns.name, ns.schema})
 	}
 
 	// Emit pattern variables and Validate() methods.
-	for _, entry := range allSchemas {
-		resolved := entry.schema.Resolved()
-		if resolved != nil {
-			g.emitPatternVars(&typeDefs, entry.name, resolved)
-			g.emitValidateMethod(&typeDefs, entry.name, resolved)
+	if !g.config.SkipValidation {
+		for _, entry := range allSchemas {
+			resolved := entry.schema.Resolved()
+			if resolved != nil {
+				g.emitPatternVars(&typeDefs, entry.name, resolved)
+				g.emitValidateMethod(&typeDefs, entry.name, resolved)
+			}
 		}
 	}
 

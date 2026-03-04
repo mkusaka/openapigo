@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/mkusaka/openapigo/internal/generate"
@@ -200,4 +201,130 @@ func TestGenerateGolden(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestConfigFlags tests that CLI config flags affect generation correctly.
+func TestConfigFlags(t *testing.T) {
+	root := repoRoot(t)
+	// Use validation spec since it has Validate() methods and readOnly/writeOnly.
+	validationSpec := filepath.Join(root, "testdata", "cases", "validation", "spec.json")
+
+	// Helper to generate and return types.go content.
+	genTypes := func(t *testing.T, cfg generate.Config) string {
+		t.Helper()
+		outDir := t.TempDir()
+		cfg.Input = validationSpec
+		cfg.Output = outDir
+		cfg.Package = "generated"
+		if err := generate.Run(cfg); err != nil {
+			t.Fatalf("generate.Run: %v", err)
+		}
+		data, err := os.ReadFile(filepath.Join(outDir, "types.go"))
+		if err != nil {
+			t.Fatalf("read types.go: %v", err)
+		}
+		return string(data)
+	}
+
+	t.Run("skip-validation", func(t *testing.T) {
+		normal := genTypes(t, generate.Config{})
+		skipped := genTypes(t, generate.Config{SkipValidation: true})
+
+		if !strings.Contains(normal, "func (v ") || !strings.Contains(normal, "Validate()") {
+			t.Fatal("normal output should contain Validate() methods")
+		}
+		if strings.Contains(skipped, "Validate()") {
+			t.Error("--skip-validation output should not contain Validate() methods")
+		}
+	})
+
+	t.Run("no-read-write-types", func(t *testing.T) {
+		// Use readwrite spec which has readOnly/writeOnly properties.
+		rwSpec := filepath.Join(root, "testdata", "cases", "readwrite", "spec.json")
+		genRW := func(cfg generate.Config) string {
+			outDir := t.TempDir()
+			cfg.Input = rwSpec
+			cfg.Output = outDir
+			cfg.Package = "generated"
+			if err := generate.Run(cfg); err != nil {
+				t.Fatalf("generate.Run: %v", err)
+			}
+			data, err := os.ReadFile(filepath.Join(outDir, "types.go"))
+			if err != nil {
+				t.Fatalf("read types.go: %v", err)
+			}
+			return string(data)
+		}
+		normal := genRW(generate.Config{})
+		noRW := genRW(generate.Config{NoReadWriteTypes: true})
+
+		if !strings.Contains(normal, "Request struct") {
+			t.Fatal("normal readwrite output should contain Request/Response variant structs")
+		}
+		if strings.Contains(noRW, "Request struct") {
+			t.Error("--no-read-write-types should not contain Request variant structs")
+		}
+	})
+
+	t.Run("dry-run", func(t *testing.T) {
+		outDir := t.TempDir()
+		err := generate.Run(generate.Config{
+			Input:   validationSpec,
+			Output:  outDir,
+			Package: "generated",
+			DryRun:  true,
+		})
+		if err != nil {
+			t.Fatalf("generate.Run: %v", err)
+		}
+		// No files should be written.
+		entries, _ := os.ReadDir(outDir)
+		for _, e := range entries {
+			if filepath.Ext(e.Name()) == ".go" {
+				t.Errorf("--dry-run should not write files, found %s", e.Name())
+			}
+		}
+	})
+
+	t.Run("validate-on-unmarshal", func(t *testing.T) {
+		normal := genTypes(t, generate.Config{})
+		withUnmarshal := genTypes(t, generate.Config{ValidateOnUnmarshal: true})
+
+		if strings.Contains(normal, "UnmarshalJSON") {
+			t.Fatal("normal output should not contain UnmarshalJSON")
+		}
+		if !strings.Contains(withUnmarshal, "UnmarshalJSON") {
+			t.Error("--validate-on-unmarshal output should contain UnmarshalJSON")
+		}
+	})
+
+	t.Run("validate-on-unmarshal-compiles", func(t *testing.T) {
+		outDir := t.TempDir()
+		err := generate.Run(generate.Config{
+			Input:               validationSpec,
+			Output:              outDir,
+			Package:             "generated",
+			ValidateOnUnmarshal: true,
+		})
+		if err != nil {
+			t.Fatalf("generate.Run: %v", err)
+		}
+		goMod := "module test/generated\n\ngo 1.24\n\ntoolchain go1.26.0\n\n" +
+			"require github.com/mkusaka/openapigo v0.0.0\n\n" +
+			"replace github.com/mkusaka/openapigo => " + root + "\n"
+		os.WriteFile(filepath.Join(outDir, "go.mod"), []byte(goMod), 0o644)
+		cmd := exec.Command("go", "build", "./...")
+		cmd.Dir = outDir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			entries, _ := os.ReadDir(outDir)
+			for _, e := range entries {
+				if filepath.Ext(e.Name()) == ".go" {
+					data, _ := os.ReadFile(filepath.Join(outDir, e.Name()))
+					t.Logf("=== %s ===\n%s", e.Name(), data)
+				}
+			}
+			t.Fatalf("go build failed:\n%s\n%v", out, err)
+		}
+	})
 }
