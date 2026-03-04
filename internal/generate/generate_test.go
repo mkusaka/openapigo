@@ -38,6 +38,7 @@ func TestGenerateAndCompile(t *testing.T) {
 		{"validation", filepath.Join(root, "testdata", "cases", "validation", "spec.json")},
 		{"circleci-v2", filepath.Join(root, "testdata", "realworld", "circleci-v2.json")},
 		{"media-types", filepath.Join(root, "testdata", "cases", "media-types", "spec.json")},
+		{"petstore-3.0", filepath.Join(root, "testdata", "realworld", "petstore-3.0.json")},
 	}
 
 	for _, tt := range tests {
@@ -100,6 +101,21 @@ func TestGenerateGolden(t *testing.T) {
 			"composition",
 			filepath.Join(root, "testdata", "cases", "composition", "spec.json"),
 			filepath.Join(root, "testdata", "cases", "composition", "expected"),
+		},
+		{
+			"readwrite",
+			filepath.Join(root, "testdata", "cases", "readwrite", "spec.json"),
+			filepath.Join(root, "testdata", "cases", "readwrite", "expected"),
+		},
+		{
+			"validation",
+			filepath.Join(root, "testdata", "cases", "validation", "spec.json"),
+			filepath.Join(root, "testdata", "cases", "validation", "expected"),
+		},
+		{
+			"media-types",
+			filepath.Join(root, "testdata", "cases", "media-types", "spec.json"),
+			filepath.Join(root, "testdata", "cases", "media-types", "expected"),
 		},
 	}
 
