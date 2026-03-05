@@ -433,10 +433,21 @@ func (g *Generator) emitSchemaType(w *strings.Builder, goName string, s *spec.Sc
 	}
 
 	// Array type alias.
-	if s.Type == "array" && s.Items != nil {
-		elemType := g.GoType(s.Items, goName+"Item")
-		fmt.Fprintf(w, "// %s is a list type.\ntype %s = []%s\n\n", goName, goName, elemType)
-		return
+	if s.Type == "array" {
+		if len(s.PrefixItems) > 0 {
+			// prefixItems with mixed types → []any.
+			// Use defined type (not alias) so Validate() can be attached.
+			fmt.Fprintf(w, "// %s is a tuple type with %d prefix items.\ntype %s []any\n\n", goName, len(s.PrefixItems), goName)
+			if !g.config.SkipValidation && s.UnevaluatedItems != nil && s.UnevaluatedItems.IsFalse() {
+				g.emitUnevaluatedItemsValidate(w, goName, s)
+			}
+			return
+		}
+		if s.Items != nil {
+			elemType := g.GoType(s.Items, goName+"Item")
+			fmt.Fprintf(w, "// %s is a list type.\ntype %s = []%s\n\n", goName, goName, elemType)
+			return
+		}
 	}
 
 	// Simple type alias.

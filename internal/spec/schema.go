@@ -18,9 +18,11 @@ type Schema struct {
 	AdditionalProperties *AdditionalProperties `json:"additionalProperties,omitempty" yaml:"additionalProperties,omitempty"`
 
 	// Array items
-	Items    *Schema   `json:"items,omitempty" yaml:"items,omitempty"`
-	MinItems *int      `json:"minItems,omitempty" yaml:"minItems,omitempty"`
-	MaxItems *int      `json:"maxItems,omitempty" yaml:"maxItems,omitempty"`
+	Items       *Schema   `json:"items,omitempty" yaml:"items,omitempty"`
+	PrefixItems []*Schema `json:"prefixItems,omitempty" yaml:"prefixItems,omitempty"`
+	Contains    *Schema   `json:"contains,omitempty" yaml:"contains,omitempty"`
+	MinItems    *int      `json:"minItems,omitempty" yaml:"minItems,omitempty"`
+	MaxItems    *int      `json:"maxItems,omitempty" yaml:"maxItems,omitempty"`
 
 	// Composition
 	AllOf []*Schema `json:"allOf,omitempty" yaml:"allOf,omitempty"`

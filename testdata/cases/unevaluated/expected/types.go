@@ -46,6 +46,17 @@ func (v *Extended) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// Point is a tuple type with 2 prefix items.
+type Point []any
+
+// Validate checks that no unevaluated items are present.
+func (v Point) Validate() error {
+	if len(v) > 2 {
+		return openapigo.ValidationErrors{openapigo.ValidationError{Field: "items", Constraint: "unevaluatedItems", Message: fmt.Sprintf("array has %d items, maximum allowed is 2", len(v))}}
+	}
+	return nil
+}
+
 // Validate checks all constraints on Extended.
 func (v Extended) Validate() error {
 	var errs openapigo.ValidationErrors

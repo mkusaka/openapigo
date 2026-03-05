@@ -573,3 +573,19 @@ func (g *Generator) emitUnevaluatedUnmarshalJSON(w *strings.Builder, typeName st
 	}
 	fmt.Fprintf(w, "\treturn nil\n}\n\n")
 }
+
+// emitUnevaluatedItemsValidate generates a Validate() method for array types
+// with prefixItems + unevaluatedItems: false, rejecting extra elements.
+func (g *Generator) emitUnevaluatedItemsValidate(w *strings.Builder, typeName string, s *spec.Schema) {
+	g.imports["fmt"] = true
+	g.imports["github.com/mkusaka/openapigo"] = true
+
+	prefixLen := len(s.PrefixItems)
+
+	fmt.Fprintf(w, "// Validate checks that no unevaluated items are present.\n")
+	fmt.Fprintf(w, "func (v %s) Validate() error {\n", typeName)
+	fmt.Fprintf(w, "\tif len(v) > %d {\n", prefixLen)
+	fmt.Fprintf(w, "\t\treturn openapigo.ValidationErrors{openapigo.ValidationError{Field: \"items\", Constraint: \"unevaluatedItems\", Message: fmt.Sprintf(\"array has %%d items, maximum allowed is %d\", len(v))}}\n", prefixLen)
+	fmt.Fprintf(w, "\t}\n")
+	fmt.Fprintf(w, "\treturn nil\n}\n\n")
+}

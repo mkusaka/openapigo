@@ -279,6 +279,16 @@ func (r *resolver) resolveSchema(s *Schema) error {
 	if err := r.resolveSchema(s.Items); err != nil {
 		return err
 	}
+	// Resolve prefixItems.
+	for _, pi := range s.PrefixItems {
+		if err := r.resolveSchema(pi); err != nil {
+			return err
+		}
+	}
+	// Resolve contains.
+	if err := r.resolveSchema(s.Contains); err != nil {
+		return err
+	}
 	// Resolve additionalProperties.
 	if s.AdditionalProperties != nil && s.AdditionalProperties.Schema != nil {
 		if err := r.resolveSchema(s.AdditionalProperties.Schema); err != nil {
@@ -390,6 +400,14 @@ func (r *resolver) indexAnchors(s *Schema) error {
 		}
 	}
 	if err := r.indexAnchors(s.Items); err != nil {
+		return err
+	}
+	for _, pi := range s.PrefixItems {
+		if err := r.indexAnchors(pi); err != nil {
+			return err
+		}
+	}
+	if err := r.indexAnchors(s.Contains); err != nil {
 		return err
 	}
 	if s.AdditionalProperties != nil {
