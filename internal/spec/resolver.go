@@ -61,6 +61,7 @@ type resolver struct {
 	httpClient *http.Client     // reused HTTP client for remote fetches
 	oas31      bool             // true if OAS >= 3.1 (affects $ref sibling keyword handling)
 	anchors    map[string]*Schema // $anchor → schema (OAS 3.1)
+	idIndex    map[string]*Schema // absolute URI (from $id) → schema (OAS 3.1)
 }
 
 func (r *resolver) resolveAll() error {
@@ -337,11 +338,14 @@ func (r *resolver) resolveSchema(s *Schema) error {
 	return nil
 }
 
-// buildAnchorIndex walks all component schemas and indexes any with $anchor.
+// buildAnchorIndex walks all component schemas and indexes any with $anchor or $id.
 // Returns an error if duplicate $anchor values are found.
 func (r *resolver) buildAnchorIndex() error {
 	if r.anchors == nil {
 		r.anchors = make(map[string]*Schema)
+	}
+	if r.idIndex == nil {
+		r.idIndex = make(map[string]*Schema)
 	}
 	if r.doc.Components == nil {
 		return nil
@@ -354,11 +358,25 @@ func (r *resolver) buildAnchorIndex() error {
 	return nil
 }
 
-// indexAnchors recursively indexes schemas with $anchor.
+// indexAnchors recursively indexes schemas with $anchor and $id.
 // Traversal scope matches resolveSchema to ensure consistency.
 func (r *resolver) indexAnchors(s *Schema) error {
 	if s == nil {
 		return nil
+	}
+	if s.ID != "" {
+		// Resolve $id to an absolute URI.
+		absID := s.ID
+		if u, err := url.Parse(absID); err == nil && !u.IsAbs() {
+			// Relative $id — not typical in practice but spec-allowed.
+			// Store as-is; full base URI resolution for relative $id chains
+			// is out of scope for initial implementation.
+			absID = s.ID
+		}
+		if existing, ok := r.idIndex[absID]; ok && existing != s {
+			return fmt.Errorf("duplicate $id %q", absID)
+		}
+		r.idIndex[absID] = s
 	}
 	if s.Anchor != "" {
 		if existing, ok := r.anchors[s.Anchor]; ok && existing != s {
@@ -468,6 +486,34 @@ func applySiblingOverrides(dst *Schema, src *Schema) {
 func (r *resolver) resolveSchemaRef(ref string) (*Schema, error) {
 	// Check for external ref (doesn't start with #).
 	if !strings.HasPrefix(ref, "#") {
+		// OAS 3.1: try $id URI lookup before external resolution.
+		if r.oas31 && r.idIndex != nil {
+			// Split URI and fragment: "https://example.com/foo#bar" → ("https://example.com/foo", "bar")
+			uri, frag := ref, ""
+			if idx := strings.IndexByte(ref, '#'); idx >= 0 {
+				uri, frag = ref[:idx], ref[idx+1:]
+			}
+			if s, ok := r.idIndex[uri]; ok {
+				if frag == "" {
+					return s, nil
+				}
+				// Percent-decode fragment per RFC 6901 URI fragment representation.
+				if decoded, err := url.PathUnescape(frag); err == nil {
+					frag = decoded
+				}
+				// Fragment starting with "/" is a JSON Pointer.
+				if strings.HasPrefix(frag, "/") {
+					return resolveJSONPointerInSchema(s, frag)
+				}
+				// Otherwise treat as $anchor.
+				if r.anchors != nil {
+					if anchored, ok := r.anchors[frag]; ok {
+						return anchored, nil
+					}
+				}
+				return nil, fmt.Errorf("cannot resolve fragment %q in $id %q", frag, uri)
+			}
+		}
 		return r.resolveExternalSchemaRef(ref)
 	}
 	// Try standard JSON Pointer path first.
@@ -518,6 +564,81 @@ func (r *resolver) resolveExternalSchemaRef(ref string) (*Schema, error) {
 }
 
 // splitRef splits "file.json#/components/schemas/Pet" into ("file.json", "#/components/schemas/Pet").
+// resolveJSONPointerInSchema resolves a JSON Pointer fragment (e.g. "/properties/name")
+// within a schema. Supports common paths: properties/<name>, items, allOf/<n>, oneOf/<n>,
+// anyOf/<n>, additionalProperties.
+func resolveJSONPointerInSchema(s *Schema, pointer string) (*Schema, error) {
+	parts := strings.Split(strings.TrimPrefix(pointer, "/"), "/")
+	current := s
+	for i := 0; i < len(parts); i++ {
+		seg := parts[i]
+		// Unescape JSON Pointer encoding: ~1 → /, ~0 → ~
+		seg = strings.ReplaceAll(seg, "~1", "/")
+		seg = strings.ReplaceAll(seg, "~0", "~")
+
+		switch seg {
+		case "properties":
+			if i+1 >= len(parts) {
+				return nil, fmt.Errorf("JSON Pointer %q: missing property name after 'properties'", pointer)
+			}
+			i++
+			propName := parts[i]
+			propName = strings.ReplaceAll(propName, "~1", "/")
+			propName = strings.ReplaceAll(propName, "~0", "~")
+			prop, ok := current.Properties[propName]
+			if !ok {
+				return nil, fmt.Errorf("JSON Pointer %q: property %q not found", pointer, propName)
+			}
+			current = prop
+		case "items":
+			if current.Items == nil {
+				return nil, fmt.Errorf("JSON Pointer %q: no items", pointer)
+			}
+			current = current.Items
+		case "additionalProperties":
+			if current.AdditionalProperties == nil || current.AdditionalProperties.Schema == nil {
+				return nil, fmt.Errorf("JSON Pointer %q: no additionalProperties schema", pointer)
+			}
+			current = current.AdditionalProperties.Schema
+		case "allOf", "oneOf", "anyOf":
+			if i+1 >= len(parts) {
+				return nil, fmt.Errorf("JSON Pointer %q: missing index after %q", pointer, seg)
+			}
+			i++
+			var arr []*Schema
+			switch seg {
+			case "allOf":
+				arr = current.AllOf
+			case "oneOf":
+				arr = current.OneOf
+			case "anyOf":
+				arr = current.AnyOf
+			}
+			idxStr := parts[i]
+			if idxStr == "" || (len(idxStr) > 1 && idxStr[0] == '0') {
+				return nil, fmt.Errorf("JSON Pointer %q: invalid index %q", pointer, idxStr)
+			}
+			idx := 0
+			for _, c := range idxStr {
+				if c < '0' || c > '9' {
+					return nil, fmt.Errorf("JSON Pointer %q: invalid index %q", pointer, idxStr)
+				}
+				idx = idx*10 + int(c-'0')
+			}
+			if idx >= len(arr) {
+				return nil, fmt.Errorf("JSON Pointer %q: index %d out of range (len=%d)", pointer, idx, len(arr))
+			}
+			current = arr[idx]
+		default:
+			return nil, fmt.Errorf("JSON Pointer %q: unsupported segment %q", pointer, seg)
+		}
+		if current == nil {
+			return nil, fmt.Errorf("JSON Pointer %q: nil schema at segment %q", pointer, seg)
+		}
+	}
+	return current, nil
+}
+
 func splitRef(ref string) (string, string) {
 	if idx := strings.IndexByte(ref, '#'); idx >= 0 {
 		return ref[:idx], ref[idx:]
