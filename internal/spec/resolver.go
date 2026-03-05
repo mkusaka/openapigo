@@ -371,22 +371,31 @@ func (r *resolver) buildAnchorIndex() error {
 // indexAnchors recursively indexes schemas with $anchor and $id.
 // Traversal scope matches resolveSchema to ensure consistency.
 func (r *resolver) indexAnchors(s *Schema) error {
+	return r.indexAnchorsWithBase(s, "")
+}
+
+// indexAnchorsWithBase recursively indexes schemas with $anchor and $id,
+// resolving relative $id values against baseURI per RFC 3986.
+func (r *resolver) indexAnchorsWithBase(s *Schema, baseURI string) error {
 	if s == nil {
 		return nil
 	}
+	currentBase := baseURI
 	if s.ID != "" {
-		// Resolve $id to an absolute URI.
 		absID := s.ID
 		if u, err := url.Parse(absID); err == nil && !u.IsAbs() {
-			// Relative $id — not typical in practice but spec-allowed.
-			// Store as-is; full base URI resolution for relative $id chains
-			// is out of scope for initial implementation.
-			absID = s.ID
+			// Relative $id — resolve against current base URI.
+			if baseURI != "" {
+				if base, err := url.Parse(baseURI); err == nil {
+					absID = base.ResolveReference(u).String()
+				}
+			}
 		}
 		if existing, ok := r.idIndex[absID]; ok && existing != s {
 			return fmt.Errorf("duplicate $id %q", absID)
 		}
 		r.idIndex[absID] = s
+		currentBase = absID // $id changes the base URI for descendants
 	}
 	if s.Anchor != "" {
 		if existing, ok := r.anchors[s.Anchor]; ok && existing != s {
@@ -395,68 +404,68 @@ func (r *resolver) indexAnchors(s *Schema) error {
 		r.anchors[s.Anchor] = s
 	}
 	for _, prop := range s.Properties {
-		if err := r.indexAnchors(prop); err != nil {
+		if err := r.indexAnchorsWithBase(prop, currentBase); err != nil {
 			return err
 		}
 	}
-	if err := r.indexAnchors(s.Items); err != nil {
+	if err := r.indexAnchorsWithBase(s.Items, currentBase); err != nil {
 		return err
 	}
 	for _, pi := range s.PrefixItems {
-		if err := r.indexAnchors(pi); err != nil {
+		if err := r.indexAnchorsWithBase(pi, currentBase); err != nil {
 			return err
 		}
 	}
-	if err := r.indexAnchors(s.Contains); err != nil {
+	if err := r.indexAnchorsWithBase(s.Contains, currentBase); err != nil {
 		return err
 	}
 	if s.AdditionalProperties != nil {
-		if err := r.indexAnchors(s.AdditionalProperties.Schema); err != nil {
+		if err := r.indexAnchorsWithBase(s.AdditionalProperties.Schema, currentBase); err != nil {
 			return err
 		}
 	}
 	for _, sub := range s.AllOf {
-		if err := r.indexAnchors(sub); err != nil {
+		if err := r.indexAnchorsWithBase(sub, currentBase); err != nil {
 			return err
 		}
 	}
 	for _, sub := range s.OneOf {
-		if err := r.indexAnchors(sub); err != nil {
+		if err := r.indexAnchorsWithBase(sub, currentBase); err != nil {
 			return err
 		}
 	}
 	for _, sub := range s.AnyOf {
-		if err := r.indexAnchors(sub); err != nil {
+		if err := r.indexAnchorsWithBase(sub, currentBase); err != nil {
 			return err
 		}
 	}
-	if err := r.indexAnchors(s.If); err != nil {
+	if err := r.indexAnchorsWithBase(s.If, currentBase); err != nil {
 		return err
 	}
-	if err := r.indexAnchors(s.Then); err != nil {
+	if err := r.indexAnchorsWithBase(s.Then, currentBase); err != nil {
 		return err
 	}
-	if err := r.indexAnchors(s.Else); err != nil {
+	if err := r.indexAnchorsWithBase(s.Else, currentBase); err != nil {
 		return err
 	}
 	// Traverse dependentSchemas, patternProperties, unevaluated* (consistent with resolveSchema).
 	for _, ds := range s.DependentSchemas {
-		if err := r.indexAnchors(ds); err != nil {
+		if err := r.indexAnchorsWithBase(ds, currentBase); err != nil {
 			return err
 		}
 	}
 	for _, pp := range s.PatternProperties {
-		if err := r.indexAnchors(pp); err != nil {
+		if err := r.indexAnchorsWithBase(pp, currentBase); err != nil {
 			return err
 		}
 	}
 	if s.UnevaluatedProperties != nil {
-		if err := r.indexAnchors(s.UnevaluatedProperties.Schema); err != nil {
+		if err := r.indexAnchorsWithBase(s.UnevaluatedProperties.Schema, currentBase); err != nil {
 			return err
 		}
 	}
 	if s.UnevaluatedItems != nil {
-		if err := r.indexAnchors(s.UnevaluatedItems.Schema); err != nil {
+		if err := r.indexAnchorsWithBase(s.UnevaluatedItems.Schema, currentBase); err != nil {
 			return err
 		}
 	}

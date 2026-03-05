@@ -665,6 +665,239 @@ func TestResolveWithExternal_RemoteTimeout(t *testing.T) {
 	}
 }
 
+func TestResolve_IDRelativeChain(t *testing.T) {
+	// Parent has absolute $id, child has relative $id.
+	// Child's $id should resolve against parent's base URI.
+	doc := &Document{
+		OpenAPI: "3.1.0",
+		Components: &Components{
+			Schemas: map[string]*Schema{
+				"Root": {
+					ID:   "https://example.com/schemas/root",
+					Type: "object",
+					Properties: map[string]*Schema{
+						"child": {
+							ID:   "child", // resolves to https://example.com/schemas/child
+							Type: "object",
+							Properties: map[string]*Schema{
+								"value": {Type: "string"},
+							},
+						},
+					},
+				},
+				"Consumer": {
+					Type: "object",
+					Properties: map[string]*Schema{
+						"data": {Ref: "https://example.com/schemas/child"},
+					},
+				},
+			},
+		},
+	}
+
+	if err := Resolve(doc); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	consumer := doc.Components.Schemas["Consumer"]
+	data := consumer.Properties["data"].Resolved()
+	if data == nil {
+		t.Fatal("resolved data is nil")
+	}
+	if data.Type != "object" {
+		t.Errorf("resolved data type = %q, want object", data.Type)
+	}
+	if _, ok := data.Properties["value"]; !ok {
+		t.Error("resolved data missing 'value' property")
+	}
+}
+
+func TestResolve_IDRelativeChainThreeLevel(t *testing.T) {
+	// Three-level chain: absolute → relative → relative.
+	// grandparent: https://example.com/a
+	// parent:      b → https://example.com/b
+	// child:       c → https://example.com/c
+	doc := &Document{
+		OpenAPI: "3.1.0",
+		Components: &Components{
+			Schemas: map[string]*Schema{
+				"Top": {
+					ID:   "https://example.com/a",
+					Type: "object",
+					Properties: map[string]*Schema{
+						"mid": {
+							ID:   "b", // resolves to https://example.com/b
+							Type: "object",
+							Properties: map[string]*Schema{
+								"inner": {
+									ID:   "c", // resolves to https://example.com/c
+									Type: "object",
+									Properties: map[string]*Schema{
+										"deep": {Type: "integer"},
+									},
+								},
+							},
+						},
+					},
+				},
+				"RefMid": {
+					Type: "object",
+					Properties: map[string]*Schema{
+						"x": {Ref: "https://example.com/b"},
+					},
+				},
+				"RefDeep": {
+					Type: "object",
+					Properties: map[string]*Schema{
+						"y": {Ref: "https://example.com/c"},
+					},
+				},
+			},
+		},
+	}
+
+	if err := Resolve(doc); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	// Verify mid-level resolution.
+	refMid := doc.Components.Schemas["RefMid"]
+	x := refMid.Properties["x"].Resolved()
+	if x == nil {
+		t.Fatal("resolved x is nil")
+	}
+	if x.Type != "object" {
+		t.Errorf("resolved x type = %q, want object", x.Type)
+	}
+
+	// Verify deep-level resolution.
+	refDeep := doc.Components.Schemas["RefDeep"]
+	y := refDeep.Properties["y"].Resolved()
+	if y == nil {
+		t.Fatal("resolved y is nil")
+	}
+	if y.Type != "object" {
+		t.Errorf("resolved y type = %q, want object", y.Type)
+	}
+	if _, ok := y.Properties["deep"]; !ok {
+		t.Error("resolved y missing 'deep' property")
+	}
+}
+
+func TestResolve_IDRelativeSubdirectory(t *testing.T) {
+	// Relative $id with path segments: "sub/schema" under "https://example.com/api/"
+	// resolves to "https://example.com/api/sub/schema".
+	doc := &Document{
+		OpenAPI: "3.1.0",
+		Components: &Components{
+			Schemas: map[string]*Schema{
+				"Parent": {
+					ID:   "https://example.com/api/",
+					Type: "object",
+					Properties: map[string]*Schema{
+						"nested": {
+							ID:   "sub/schema", // resolves to https://example.com/api/sub/schema
+							Type: "object",
+							Properties: map[string]*Schema{
+								"name": {Type: "string"},
+							},
+						},
+					},
+				},
+				"Ref": {
+					Type: "object",
+					Properties: map[string]*Schema{
+						"s": {Ref: "https://example.com/api/sub/schema"},
+					},
+				},
+			},
+		},
+	}
+
+	if err := Resolve(doc); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	ref := doc.Components.Schemas["Ref"]
+	s := ref.Properties["s"].Resolved()
+	if s == nil {
+		t.Fatal("resolved s is nil")
+	}
+	if _, ok := s.Properties["name"]; !ok {
+		t.Error("resolved s missing 'name' property")
+	}
+}
+
+func TestResolve_IDRelativeDuplicateAfterResolution(t *testing.T) {
+	// Relative $id resolves to same absolute URI as another schema → duplicate error.
+	doc := &Document{
+		OpenAPI: "3.1.0",
+		Components: &Components{
+			Schemas: map[string]*Schema{
+				"Existing": {
+					ID:   "https://example.com/target",
+					Type: "object",
+				},
+				"Parent": {
+					ID:   "https://example.com/base",
+					Type: "object",
+					Properties: map[string]*Schema{
+						"child": {
+							ID:   "target", // resolves to https://example.com/target → duplicate
+							Type: "object",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	err := Resolve(doc)
+	if err == nil {
+		t.Fatal("expected duplicate $id error after relative resolution")
+	}
+	if !strings.Contains(err.Error(), "duplicate $id") {
+		t.Errorf("expected 'duplicate $id' error, got: %v", err)
+	}
+}
+
+func TestResolve_IDRelativeWithNoParentBase(t *testing.T) {
+	// Relative $id with no parent base URI — stored as-is (no resolution possible).
+	doc := &Document{
+		OpenAPI: "3.1.0",
+		Components: &Components{
+			Schemas: map[string]*Schema{
+				"Orphan": {
+					ID:   "relative-only",
+					Type: "object",
+					Properties: map[string]*Schema{
+						"val": {Type: "string"},
+					},
+				},
+				"Ref": {
+					Type: "object",
+					Properties: map[string]*Schema{
+						"o": {Ref: "relative-only"},
+					},
+				},
+			},
+		},
+	}
+
+	if err := Resolve(doc); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	ref := doc.Components.Schemas["Ref"]
+	o := ref.Properties["o"].Resolved()
+	if o == nil {
+		t.Fatal("resolved o is nil")
+	}
+	if o.Type != "object" {
+		t.Errorf("resolved o type = %q, want object", o.Type)
+	}
+}
+
 func TestResolveWithExternal_HTTPBlockedByDefault(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
