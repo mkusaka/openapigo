@@ -652,3 +652,56 @@ func (g *Generator) emitUnevaluatedItemsValidate(w *strings.Builder, typeName st
 	fmt.Fprintf(w, "\t}\n")
 	fmt.Fprintf(w, "\treturn nil\n}\n\n")
 }
+
+// emitUnevaluatedItemsSchemaValidate generates a Validate() method for array types
+// with prefixItems + unevaluatedItems: {schema}, validating extra items match the schema type.
+// Only simple primitive types (string, number, integer, boolean) are supported;
+// complex schemas are silently skipped (known limitation).
+func (g *Generator) emitUnevaluatedItemsSchemaValidate(w *strings.Builder, typeName string, s *spec.Schema) {
+	schema := s.UnevaluatedItems.Schema.Resolved()
+	prefixLen := len(s.PrefixItems)
+
+	typeCheck, expectedType := unevalItemsTypeCheck(schema)
+	if typeCheck == "" {
+		return // Complex schema — skip validation.
+	}
+
+	g.imports["fmt"] = true
+	g.imports["github.com/mkusaka/openapigo"] = true
+
+	fmt.Fprintf(w, "// Validate checks that unevaluated items match the required type.\n")
+	fmt.Fprintf(w, "func (v %s) Validate() error {\n", typeName)
+	fmt.Fprintf(w, "\tvar errs openapigo.ValidationErrors\n")
+	fmt.Fprintf(w, "\tfor i := %d; i < len(v); i++ {\n", prefixLen)
+	fmt.Fprintf(w, "%s", typeCheck)
+	fmt.Fprintf(w, "\t}\n")
+	fmt.Fprintf(w, "\tif len(errs) > 0 {\n\t\treturn errs\n\t}\n")
+	fmt.Fprintf(w, "\treturn nil\n}\n\n")
+	_ = expectedType // used for documentation purposes only
+}
+
+// unevalItemsTypeCheck returns the Go type assertion code for validating
+// unevaluatedItems against a simple schema type. Returns ("", "") for
+// unsupported/complex schemas.
+func unevalItemsTypeCheck(schema *spec.Schema) (string, string) {
+	switch schema.Type {
+	case "string":
+		return "\t\tif _, ok := v[i].(string); !ok {\n" +
+			"\t\t\terrs = append(errs, openapigo.ValidationError{Field: fmt.Sprintf(\"[%d]\", i), Constraint: \"unevaluatedItems\", Message: fmt.Sprintf(\"item %d: expected string\", i)})\n" +
+			"\t\t}\n", "string"
+	case "number":
+		return "\t\tif _, ok := v[i].(float64); !ok {\n" +
+			"\t\t\terrs = append(errs, openapigo.ValidationError{Field: fmt.Sprintf(\"[%d]\", i), Constraint: \"unevaluatedItems\", Message: fmt.Sprintf(\"item %d: expected number\", i)})\n" +
+			"\t\t}\n", "number"
+	case "integer":
+		return "\t\tif f, ok := v[i].(float64); !ok || f != float64(int64(f)) {\n" +
+			"\t\t\terrs = append(errs, openapigo.ValidationError{Field: fmt.Sprintf(\"[%d]\", i), Constraint: \"unevaluatedItems\", Message: fmt.Sprintf(\"item %d: expected integer\", i)})\n" +
+			"\t\t}\n", "integer"
+	case "boolean":
+		return "\t\tif _, ok := v[i].(bool); !ok {\n" +
+			"\t\t\terrs = append(errs, openapigo.ValidationError{Field: fmt.Sprintf(\"[%d]\", i), Constraint: \"unevaluatedItems\", Message: fmt.Sprintf(\"item %d: expected boolean\", i)})\n" +
+			"\t\t}\n", "boolean"
+	default:
+		return "", ""
+	}
+}

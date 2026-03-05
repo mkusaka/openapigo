@@ -118,6 +118,77 @@ func (v Point) Validate() error {
 	return nil
 }
 
+// PointWithBoolLabel is a tuple type with 1 prefix items.
+type PointWithBoolLabel []any
+
+// Validate checks that unevaluated items match the required type.
+func (v PointWithBoolLabel) Validate() error {
+	var errs openapigo.ValidationErrors
+	for i := 1; i < len(v); i++ {
+		if _, ok := v[i].(bool); !ok {
+			errs = append(errs, openapigo.ValidationError{Field: fmt.Sprintf("[%d]", i), Constraint: "unevaluatedItems", Message: fmt.Sprintf("item %d: expected boolean", i)})
+		}
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
+}
+
+// PointWithIntLabel is a tuple type with 1 prefix items.
+type PointWithIntLabel []any
+
+// Validate checks that unevaluated items match the required type.
+func (v PointWithIntLabel) Validate() error {
+	var errs openapigo.ValidationErrors
+	for i := 1; i < len(v); i++ {
+		if f, ok := v[i].(float64); !ok || f != float64(int64(f)) {
+			errs = append(errs, openapigo.ValidationError{Field: fmt.Sprintf("[%d]", i), Constraint: "unevaluatedItems", Message: fmt.Sprintf("item %d: expected integer", i)})
+		}
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
+}
+
+// PointWithItems is a tuple type with 2 prefix items.
+type PointWithItems []any
+
+// PointWithLabel is a tuple type with 2 prefix items.
+type PointWithLabel []any
+
+// Validate checks that unevaluated items match the required type.
+func (v PointWithLabel) Validate() error {
+	var errs openapigo.ValidationErrors
+	for i := 2; i < len(v); i++ {
+		if _, ok := v[i].(string); !ok {
+			errs = append(errs, openapigo.ValidationError{Field: fmt.Sprintf("[%d]", i), Constraint: "unevaluatedItems", Message: fmt.Sprintf("item %d: expected string", i)})
+		}
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
+}
+
+// PointWithNumLabel is a tuple type with 1 prefix items.
+type PointWithNumLabel []any
+
+// Validate checks that unevaluated items match the required type.
+func (v PointWithNumLabel) Validate() error {
+	var errs openapigo.ValidationErrors
+	for i := 1; i < len(v); i++ {
+		if _, ok := v[i].(float64); !ok {
+			errs = append(errs, openapigo.ValidationError{Field: fmt.Sprintf("[%d]", i), Constraint: "unevaluatedItems", Message: fmt.Sprintf("item %d: expected number", i)})
+		}
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
+}
+
 var patternUnevalAllOfWithPatternProps0 = regexp.MustCompile("^x-")
 
 // Validate checks all constraints on AllOfWithPatternProps.

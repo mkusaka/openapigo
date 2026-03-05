@@ -474,8 +474,14 @@ func (g *Generator) emitSchemaType(w *strings.Builder, goName string, s *spec.Sc
 			// prefixItems with mixed types → []any.
 			// Use defined type (not alias) so Validate() can be attached.
 			fmt.Fprintf(w, "// %s is a tuple type with %d prefix items.\ntype %s []any\n\n", goName, len(s.PrefixItems), goName)
-			if !g.config.SkipValidation && s.UnevaluatedItems != nil && s.UnevaluatedItems.IsFalse() {
-				g.emitUnevaluatedItemsValidate(w, goName, s)
+			if !g.config.SkipValidation && s.UnevaluatedItems != nil {
+				if s.Items != nil {
+					// items evaluates all positions after prefixItems → unevaluatedItems is a no-op.
+				} else if s.UnevaluatedItems.IsFalse() {
+					g.emitUnevaluatedItemsValidate(w, goName, s)
+				} else if s.UnevaluatedItems.Schema != nil {
+					g.emitUnevaluatedItemsSchemaValidate(w, goName, s)
+				}
 			}
 			return
 		}

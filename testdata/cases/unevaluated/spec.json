@@ -82,6 +82,44 @@
           { "type": "number" }
         ],
         "unevaluatedItems": false
+      },
+      "PointWithLabel": {
+        "type": "array",
+        "prefixItems": [
+          { "type": "number" },
+          { "type": "number" }
+        ],
+        "unevaluatedItems": { "type": "string" }
+      },
+      "PointWithNumLabel": {
+        "type": "array",
+        "prefixItems": [
+          { "type": "string" }
+        ],
+        "unevaluatedItems": { "type": "number" }
+      },
+      "PointWithIntLabel": {
+        "type": "array",
+        "prefixItems": [
+          { "type": "string" }
+        ],
+        "unevaluatedItems": { "type": "integer" }
+      },
+      "PointWithBoolLabel": {
+        "type": "array",
+        "prefixItems": [
+          { "type": "string" }
+        ],
+        "unevaluatedItems": { "type": "boolean" }
+      },
+      "PointWithItems": {
+        "type": "array",
+        "prefixItems": [
+          { "type": "number" },
+          { "type": "number" }
+        ],
+        "items": { "type": "number" },
+        "unevaluatedItems": false
       }
     }
   }
