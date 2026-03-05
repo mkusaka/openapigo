@@ -45,7 +45,9 @@ type Generator struct {
 	multipartTypeNames map[string]bool         // Go type names that need File for format:binary
 	multipartNameCache map[string]string       // component schema name → generated multipart type name
 	extraTypeDefs      []string                // extra type definitions (e.g., union body structs)
-	unevaluatedEvalKeys map[string][]string    // typeName → sorted evaluated property names (JSON keys)
+	unevaluatedEvalKeys  map[string][]string          // typeName → sorted evaluated property names (JSON keys)
+	unevaluatedPatterns  map[string][]string          // typeName → regex patterns from patternProperties
+	unevaluatedBranches  map[string]*unevalBranchSet  // typeName → oneOf/anyOf branch info
 }
 
 // Run executes the full generation pipeline.
@@ -92,7 +94,9 @@ func Run(cfg Config) error {
 		usedOpNames:        make(map[string]bool),
 		multipartTypeNames:  make(map[string]bool),
 		multipartNameCache:  make(map[string]string),
-		unevaluatedEvalKeys: make(map[string][]string),
+		unevaluatedEvalKeys:  make(map[string][]string),
+		unevaluatedPatterns:  make(map[string][]string),
+		unevaluatedBranches:  make(map[string]*unevalBranchSet),
 	}
 
 	// 3. Assign names to component schemas.
@@ -352,6 +356,7 @@ func (g *Generator) generateTypes(source string) string {
 			resolved := entry.schema.Resolved()
 			if resolved != nil {
 				g.emitPatternVars(&typeDefs, entry.name, resolved)
+				g.emitUnevaluatedPatternVars(&typeDefs, entry.name)
 				g.emitValidateMethod(&typeDefs, entry.name, resolved)
 			}
 		}
@@ -392,8 +397,29 @@ func (g *Generator) emitSchemaType(w *strings.Builder, goName string, s *spec.Sc
 		return
 	}
 
-	// oneOf/anyOf — emit type alias to any.
+	// oneOf/anyOf
 	if len(s.OneOf) > 0 || len(s.AnyOf) > 0 {
+		// If unevaluatedProperties: false, generate a superset struct with branch matching.
+		// additionalProperties (not false) on base or any branch evaluates all extra keys,
+		// making the unevaluated check a no-op.
+		hasAdditional := s.AdditionalProperties != nil && !s.AdditionalProperties.IsFalse()
+		if !hasAdditional {
+			branches := s.OneOf
+			if len(branches) == 0 {
+				branches = s.AnyOf
+			}
+			for _, b := range branches {
+				r := b.Resolved()
+				if r != nil && r.AdditionalProperties != nil && !r.AdditionalProperties.IsFalse() {
+					hasAdditional = true
+					break
+				}
+			}
+		}
+		if !g.config.SkipValidation && s.UnevaluatedProperties != nil && s.UnevaluatedProperties.IsFalse() && !hasAdditional {
+			g.emitOneOfAnyOfUnevaluatedType(w, goName, s)
+			return
+		}
 		fmt.Fprintf(w, "// %s is a union type (oneOf/anyOf).\ntype %s = any\n\n", goName, goName)
 		return
 	}
@@ -412,7 +438,8 @@ func (g *Generator) emitSchemaType(w *strings.Builder, goName string, s *spec.Sc
 
 	// Object type (with possible if/then/else).
 	if s.Type == "object" || (s.Type == "" && len(s.Properties) > 0) {
-		hasUneval := !g.config.SkipValidation && s.UnevaluatedProperties != nil && s.UnevaluatedProperties.IsFalse()
+		hasAdditional := s.AdditionalProperties != nil && !s.AdditionalProperties.IsFalse()
+		hasUneval := !g.config.SkipValidation && s.UnevaluatedProperties != nil && s.UnevaluatedProperties.IsFalse() && !hasAdditional
 
 		// if/then/else: merge all branch properties into the struct.
 		var effective *spec.Schema
@@ -424,6 +451,15 @@ func (g *Generator) emitSchemaType(w *strings.Builder, goName string, s *spec.Sc
 
 		if hasUneval {
 			g.registerUnevaluatedEvalKeys(goName, effective)
+			// Collect patterns from patternProperties.
+			var patterns []string
+			for pattern := range effective.PatternProperties {
+				patterns = append(patterns, pattern)
+			}
+			if len(patterns) > 0 {
+				sortStrings(patterns)
+				g.unevaluatedPatterns[goName] = patterns
+			}
 		}
 		g.emitStructType(w, goName, effective)
 		if hasUneval {
@@ -485,16 +521,33 @@ func (g *Generator) emitAllOfType(w *strings.Builder, goName string, s *spec.Sch
 		if s.UnevaluatedProperties != nil {
 			merged.UnevaluatedProperties = s.UnevaluatedProperties
 		}
-		// Register unevaluated eval keys before emitStructType so rawFieldKeys is added.
-		if !g.config.SkipValidation && s.UnevaluatedProperties != nil && s.UnevaluatedProperties.IsFalse() {
+
+		// Check for additionalProperties/patternProperties in allOf branches.
+		// additionalProperties (not false) in any branch evaluates all extra keys,
+		// making unevaluatedProperties: false a no-op.
+		hasAdditionalProps := false
+		var unevalPatterns []string
+		for _, sub := range resolved {
+			if sub.AdditionalProperties != nil && !sub.AdditionalProperties.IsFalse() {
+				hasAdditionalProps = true
+			}
+			for pattern := range sub.PatternProperties {
+				unevalPatterns = append(unevalPatterns, pattern)
+			}
+		}
+
+		wantUneval := !g.config.SkipValidation && s.UnevaluatedProperties != nil && s.UnevaluatedProperties.IsFalse() && !hasAdditionalProps
+		if wantUneval {
 			g.registerUnevaluatedEvalKeys(goName, merged)
+			if len(unevalPatterns) > 0 {
+				sortStrings(unevalPatterns)
+				g.unevaluatedPatterns[goName] = unevalPatterns
+			}
 		}
 
 		g.emitStructType(w, goName, merged)
 
-		// unevaluatedProperties: false → generate UnmarshalJSON to record raw JSON keys.
-		// The Validate() check is emitted by emitValidateMethod using unevaluatedEvalKeys.
-		if !g.config.SkipValidation && s.UnevaluatedProperties != nil && s.UnevaluatedProperties.IsFalse() {
+		if wantUneval {
 			g.emitUnevaluatedUnmarshalJSON(w, goName, merged)
 		}
 		return
@@ -513,6 +566,111 @@ func (g *Generator) emitAllOfType(w *strings.Builder, goName string, s *spec.Sch
 			fmt.Fprintf(w, "// %s is a type alias.\ntype %s = %s\n\n", goName, goName, goType)
 		}
 	}
+}
+
+// emitOneOfAnyOfUnevaluatedType generates a superset struct for oneOf/anyOf
+// schemas with unevaluatedProperties: false. Base properties are always evaluated;
+// branch properties are evaluated based on required-field presence at runtime.
+func (g *Generator) emitOneOfAnyOfUnevaluatedType(w *strings.Builder, goName string, s *spec.Schema) {
+	kind := "oneOf"
+	branches := s.OneOf
+	if len(branches) == 0 {
+		kind = "anyOf"
+		branches = s.AnyOf
+	}
+
+	// Build merged schema with base + all branch properties.
+	merged := &spec.Schema{
+		Type:       "object",
+		Properties: make(map[string]*spec.Schema),
+		Required:   append([]string(nil), s.Required...),
+	}
+	// Copy base properties (sorted for deterministic output).
+	baseOrder := s.PropertyOrder
+	if len(baseOrder) == 0 {
+		for propName := range s.Properties {
+			baseOrder = append(baseOrder, propName)
+		}
+		sortStrings(baseOrder)
+	}
+	for _, propName := range baseOrder {
+		if prop, ok := s.Properties[propName]; ok {
+			merged.Properties[propName] = prop
+			merged.PropertyOrder = append(merged.PropertyOrder, propName)
+		}
+	}
+
+	// Collect branch info and merge branch properties.
+	var branchInfos []unevalBranch
+	for _, branch := range branches {
+		b := branch.Resolved()
+		if b == nil {
+			continue
+		}
+		bi := unevalBranch{
+			required: append([]string(nil), b.Required...),
+		}
+		bPropOrder := b.PropertyOrder
+		if len(bPropOrder) == 0 {
+			for pn := range b.Properties {
+				bPropOrder = append(bPropOrder, pn)
+			}
+			sortStrings(bPropOrder)
+		}
+		for _, propName := range bPropOrder {
+			prop := b.Properties[propName]
+			if prop == nil {
+				continue
+			}
+			bi.props = append(bi.props, propName)
+			if _, exists := merged.Properties[propName]; !exists {
+				merged.Properties[propName] = prop
+				merged.PropertyOrder = append(merged.PropertyOrder, propName)
+			}
+		}
+		sortStrings(bi.props)
+		branchInfos = append(branchInfos, bi)
+	}
+
+	// Register base eval keys (always evaluated).
+	baseKeys := make([]string, 0, len(s.Properties))
+	for propName := range s.Properties {
+		baseKeys = append(baseKeys, propName)
+	}
+	sortStrings(baseKeys)
+	g.unevaluatedEvalKeys[goName] = baseKeys
+
+	// Register branch info for Validate() generation.
+	g.unevaluatedBranches[goName] = &unevalBranchSet{
+		kind:     kind,
+		branches: branchInfos,
+	}
+
+	// Collect patternProperties patterns from base and branches.
+	// NOTE: patterns from all branches are included unconditionally (conservative/lenient).
+	// Strictly, only the matched branch's patterns should count as evaluated, but we
+	// can't determine the matching branch at codegen time. Being lenient avoids false
+	// rejections at the cost of allowing some truly unevaluated properties through.
+	var unevalPatterns []string
+	for pattern := range s.PatternProperties {
+		unevalPatterns = append(unevalPatterns, pattern)
+	}
+	for _, branch := range branches {
+		b := branch.Resolved()
+		if b == nil {
+			continue
+		}
+		for pattern := range b.PatternProperties {
+			unevalPatterns = append(unevalPatterns, pattern)
+		}
+	}
+	if len(unevalPatterns) > 0 {
+		sortStrings(unevalPatterns)
+		g.unevaluatedPatterns[goName] = unevalPatterns
+	}
+
+	g.emitStructType(w, goName, merged)
+	g.emitUnevaluatedUnmarshalJSON(w, goName, merged)
 }
 
 // generateOperations produces the operations.go file content.

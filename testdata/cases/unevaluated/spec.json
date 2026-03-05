@@ -28,6 +28,53 @@
         ],
         "unevaluatedProperties": false
       },
+      "AllOfWithAdditionalProps": {
+        "allOf": [
+          { "$ref": "#/components/schemas/Base" },
+          {
+            "type": "object",
+            "properties": {
+              "extra": { "type": "string" }
+            },
+            "additionalProperties": true
+          }
+        ],
+        "unevaluatedProperties": false
+      },
+      "AllOfWithPatternProps": {
+        "allOf": [
+          { "$ref": "#/components/schemas/Base" },
+          {
+            "type": "object",
+            "patternProperties": {
+              "^x-": { "type": "string" }
+            }
+          }
+        ],
+        "unevaluatedProperties": false
+      },
+      "OneOfUneval": {
+        "type": "object",
+        "properties": {
+          "kind": { "type": "string" }
+        },
+        "required": ["kind"],
+        "oneOf": [
+          {
+            "properties": {
+              "whiskers": { "type": "number" }
+            },
+            "required": ["whiskers"]
+          },
+          {
+            "properties": {
+              "bark": { "type": "boolean" }
+            },
+            "required": ["bark"]
+          }
+        ],
+        "unevaluatedProperties": false
+      },
       "Point": {
         "type": "array",
         "prefixItems": [

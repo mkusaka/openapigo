@@ -8,10 +8,44 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/mkusaka/openapigo"
+	"regexp"
 )
 
 // Ensures generated code is compatible with the runtime library.
 var _ = openapigo.RuntimeCompatV0_1
+
+// AllOfWithAdditionalProps represents the schema.
+type AllOfWithAdditionalProps struct {
+	ID    int64   `json:"id"`
+	Name  string  `json:"name"`
+	Extra *string `json:"extra,omitzero"`
+}
+
+// AllOfWithPatternProps represents the schema.
+type AllOfWithPatternProps struct {
+	ID           int64           `json:"id"`
+	Name         string          `json:"name"`
+	rawFieldKeys map[string]bool `json:"-"`
+}
+
+// UnmarshalJSON unmarshals JSON and records raw field keys for unevaluatedProperties checking.
+func (v *AllOfWithPatternProps) UnmarshalJSON(data []byte) error {
+	type alias AllOfWithPatternProps
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*v = AllOfWithPatternProps(a)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	v.rawFieldKeys = make(map[string]bool, len(raw))
+	for k := range raw {
+		v.rawFieldKeys[k] = true
+	}
+	return nil
+}
 
 // Base represents the schema.
 type Base struct {
@@ -46,6 +80,33 @@ func (v *Extended) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// OneOfUneval represents the schema.
+type OneOfUneval struct {
+	Kind         string          `json:"kind"`
+	Whiskers     *float64        `json:"whiskers,omitzero"`
+	Bark         *bool           `json:"bark,omitzero"`
+	rawFieldKeys map[string]bool `json:"-"`
+}
+
+// UnmarshalJSON unmarshals JSON and records raw field keys for unevaluatedProperties checking.
+func (v *OneOfUneval) UnmarshalJSON(data []byte) error {
+	type alias OneOfUneval
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*v = OneOfUneval(a)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	v.rawFieldKeys = make(map[string]bool, len(raw))
+	for k := range raw {
+		v.rawFieldKeys[k] = true
+	}
+	return nil
+}
+
 // Point is a tuple type with 2 prefix items.
 type Point []any
 
@@ -57,6 +118,30 @@ func (v Point) Validate() error {
 	return nil
 }
 
+var patternUnevalAllOfWithPatternProps0 = regexp.MustCompile("^x-")
+
+// Validate checks all constraints on AllOfWithPatternProps.
+func (v AllOfWithPatternProps) Validate() error {
+	var errs openapigo.ValidationErrors
+	evaluated := map[string]bool{
+		"id":   true,
+		"name": true,
+	}
+	for k := range v.rawFieldKeys {
+		if evaluated[k] {
+			continue
+		}
+		if patternUnevalAllOfWithPatternProps0.MatchString(k) {
+			continue
+		}
+		errs = append(errs, openapigo.ValidationError{Field: k, Constraint: "unevaluatedProperties", Message: fmt.Sprintf("unevaluated property %q", k)})
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
+}
+
 // Validate checks all constraints on Extended.
 func (v Extended) Validate() error {
 	var errs openapigo.ValidationErrors
@@ -64,6 +149,31 @@ func (v Extended) Validate() error {
 		"email": true,
 		"id":    true,
 		"name":  true,
+	}
+	for k := range v.rawFieldKeys {
+		if !evaluated[k] {
+			errs = append(errs, openapigo.ValidationError{Field: k, Constraint: "unevaluatedProperties", Message: fmt.Sprintf("unevaluated property %q", k)})
+		}
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
+}
+
+// Validate checks all constraints on OneOfUneval.
+func (v OneOfUneval) Validate() error {
+	var errs openapigo.ValidationErrors
+	evaluated := map[string]bool{
+		"kind": true,
+	}
+	// oneOf branch 0
+	if v.rawFieldKeys["whiskers"] {
+		evaluated["whiskers"] = true
+	}
+	// oneOf branch 1
+	if v.rawFieldKeys["bark"] {
+		evaluated["bark"] = true
 	}
 	for k := range v.rawFieldKeys {
 		if !evaluated[k] {

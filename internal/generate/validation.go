@@ -304,10 +304,47 @@ func (g *Generator) emitValidateMethod(w *strings.Builder, typeName string, s *s
 			fmt.Fprintf(w, "\t\t%q: true,\n", k)
 		}
 		fmt.Fprintf(w, "\t}\n")
+
+		// oneOf/anyOf branch matching: add branch properties if required fields are present.
+		if bs, ok := g.unevaluatedBranches[typeName]; ok {
+			for i, b := range bs.branches {
+				if len(b.required) == 0 {
+					// No required fields → conservatively include all branch properties.
+					for _, p := range b.props {
+						fmt.Fprintf(w, "\tevaluated[%q] = true\n", p)
+					}
+				} else {
+					fmt.Fprintf(w, "\t// %s branch %d\n", bs.kind, i)
+					fmt.Fprintf(w, "\tif ")
+					for j, r := range b.required {
+						if j > 0 {
+							fmt.Fprintf(w, " && ")
+						}
+						fmt.Fprintf(w, "v.rawFieldKeys[%q]", r)
+					}
+					fmt.Fprintf(w, " {\n")
+					for _, p := range b.props {
+						fmt.Fprintf(w, "\t\tevaluated[%q] = true\n", p)
+					}
+					fmt.Fprintf(w, "\t}\n")
+				}
+			}
+		}
+
+		patterns := g.unevaluatedPatterns[typeName]
 		fmt.Fprintf(w, "\tfor k := range v.rawFieldKeys {\n")
-		fmt.Fprintf(w, "\t\tif !evaluated[k] {\n")
-		fmt.Fprintf(w, "\t\t\terrs = append(errs, openapigo.ValidationError{Field: k, Constraint: \"unevaluatedProperties\", Message: fmt.Sprintf(\"unevaluated property %%q\", k)})\n")
-		fmt.Fprintf(w, "\t\t}\n")
+		if len(patterns) > 0 {
+			fmt.Fprintf(w, "\t\tif evaluated[k] {\n\t\t\tcontinue\n\t\t}\n")
+			for i := range patterns {
+				varName := fmt.Sprintf("patternUneval%s%d", typeName, i)
+				fmt.Fprintf(w, "\t\tif %s.MatchString(k) {\n\t\t\tcontinue\n\t\t}\n", varName)
+			}
+			fmt.Fprintf(w, "\t\terrs = append(errs, openapigo.ValidationError{Field: k, Constraint: \"unevaluatedProperties\", Message: fmt.Sprintf(\"unevaluated property %%q\", k)})\n")
+		} else {
+			fmt.Fprintf(w, "\t\tif !evaluated[k] {\n")
+			fmt.Fprintf(w, "\t\t\terrs = append(errs, openapigo.ValidationError{Field: k, Constraint: \"unevaluatedProperties\", Message: fmt.Sprintf(\"unevaluated property %%q\", k)})\n")
+			fmt.Fprintf(w, "\t\t}\n")
+		}
 		fmt.Fprintf(w, "\t}\n")
 	}
 
@@ -534,6 +571,18 @@ func (g *Generator) emitPatternVars(w *strings.Builder, typeName string, s *spec
 	}
 }
 
+// unevalBranch holds property info for a single oneOf/anyOf branch.
+type unevalBranch struct {
+	props    []string // JSON property names declared in this branch
+	required []string // required fields in this branch
+}
+
+// unevalBranchSet holds oneOf/anyOf branch info for unevaluated property checking.
+type unevalBranchSet struct {
+	kind     string        // "oneOf" or "anyOf"
+	branches []unevalBranch
+}
+
 // registerUnevaluatedEvalKeys collects evaluated property names (JSON keys) from a merged
 // schema and stores them for use by emitValidateMethod and emitStructType.
 // Must be called before emitStructType so rawFieldKeys field is generated.
@@ -572,6 +621,20 @@ func (g *Generator) emitUnevaluatedUnmarshalJSON(w *strings.Builder, typeName st
 		fmt.Fprintf(w, "\t\treturn err\n\t}\n")
 	}
 	fmt.Fprintf(w, "\treturn nil\n}\n\n")
+}
+
+// emitUnevaluatedPatternVars emits package-level compiled regexp variables
+// for patternProperties patterns used in unevaluated property checking.
+func (g *Generator) emitUnevaluatedPatternVars(w *strings.Builder, typeName string) {
+	patterns, ok := g.unevaluatedPatterns[typeName]
+	if !ok {
+		return
+	}
+	g.imports["regexp"] = true
+	for i, pattern := range patterns {
+		varName := fmt.Sprintf("patternUneval%s%d", typeName, i)
+		fmt.Fprintf(w, "var %s = regexp.MustCompile(%q)\n", varName, pattern)
+	}
 }
 
 // emitUnevaluatedItemsValidate generates a Validate() method for array types
