@@ -1,7 +1,14 @@
 package spec
 
 import (
+	"errors"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestResolve_AnchorRef(t *testing.T) {
@@ -548,5 +555,146 @@ func TestResolve_IDAndAnchorCombination(t *testing.T) {
 	}
 	if _, ok := byAnchor.Properties["email"]; !ok {
 		t.Error("byAnchor missing 'email'")
+	}
+}
+
+// remoteSpecJSON is a minimal OAS 3.1 spec served by httptest.Server.
+const remoteSpecJSON = `{
+  "openapi": "3.1.0",
+  "info": {"title": "Remote", "version": "1.0.0"},
+  "paths": {},
+  "components": {
+    "schemas": {
+      "Widget": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"}
+        }
+      }
+    }
+  }
+}`
+
+func TestResolveWithExternal_RemoteHeader(t *testing.T) {
+	var mu sync.Mutex
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotAuth = r.Header.Get("Authorization")
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(remoteSpecJSON))
+	}))
+	defer srv.Close()
+
+	doc := &Document{
+		OpenAPI: "3.1.0",
+		Components: &Components{
+			Schemas: map[string]*Schema{
+				"Local": {
+					Type: "object",
+					Properties: map[string]*Schema{
+						"w": {Ref: srv.URL + "/remote.json#/components/schemas/Widget"},
+					},
+				},
+			},
+		},
+	}
+
+	err := ResolveWithExternal(doc, ResolveConfig{
+		BaseDir:   t.TempDir(),
+		AllowHTTP: true,
+		Headers:   map[string]string{"Authorization": "Bearer test-token"},
+	})
+	if err != nil {
+		t.Fatalf("ResolveWithExternal: %v", err)
+	}
+
+	mu.Lock()
+	auth := gotAuth
+	mu.Unlock()
+	if auth != "Bearer test-token" {
+		t.Errorf("Authorization header = %q, want %q", auth, "Bearer test-token")
+	}
+
+	w := doc.Components.Schemas["Local"].Properties["w"].Resolved()
+	if w.Type != "object" {
+		t.Errorf("resolved Widget type = %q, want object", w.Type)
+	}
+}
+
+func TestResolveWithExternal_RemoteTimeout(t *testing.T) {
+	// Server that sleeps longer than the timeout.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(remoteSpecJSON))
+	}))
+	defer srv.Close()
+
+	doc := &Document{
+		OpenAPI: "3.1.0",
+		Components: &Components{
+			Schemas: map[string]*Schema{
+				"Local": {
+					Type: "object",
+					Properties: map[string]*Schema{
+						"w": {Ref: srv.URL + "/remote.json#/components/schemas/Widget"},
+					},
+				},
+			},
+		},
+	}
+
+	err := ResolveWithExternal(doc, ResolveConfig{
+		BaseDir:   t.TempDir(),
+		AllowHTTP: true,
+		Timeout:   50 * time.Millisecond, // shorter than server sleep
+	})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	// Check for timeout using type assertion (more robust than string matching).
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		// Expected timeout error.
+	} else if strings.Contains(err.Error(), "Client.Timeout") || strings.Contains(err.Error(), "context deadline") {
+		// Fallback string match.
+	} else {
+		t.Errorf("expected timeout error, got: %v", err)
+	}
+}
+
+func TestResolveWithExternal_HTTPBlockedByDefault(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(remoteSpecJSON))
+	}))
+	defer srv.Close()
+
+	doc := &Document{
+		OpenAPI: "3.1.0",
+		Components: &Components{
+			Schemas: map[string]*Schema{
+				"Local": {
+					Type: "object",
+					Properties: map[string]*Schema{
+						"w": {Ref: srv.URL + "/remote.json#/components/schemas/Widget"},
+					},
+				},
+			},
+		},
+	}
+
+	// AllowHTTP = false (default) should block HTTP URLs.
+	err := ResolveWithExternal(doc, ResolveConfig{
+		BaseDir:   t.TempDir(),
+		AllowHTTP: false,
+	})
+	if err == nil {
+		t.Fatal("expected HTTP blocked error")
+	}
+	if !strings.Contains(err.Error(), "HTTP not allowed") {
+		t.Errorf("expected 'HTTP not allowed' error, got: %v", err)
 	}
 }
