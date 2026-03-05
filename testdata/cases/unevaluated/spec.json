@@ -75,6 +75,34 @@
         ],
         "unevaluatedProperties": false
       },
+      "OneOfWithBranchPatterns": {
+        "type": "object",
+        "properties": {
+          "kind": { "type": "string" }
+        },
+        "required": ["kind"],
+        "oneOf": [
+          {
+            "properties": {
+              "cat_name": { "type": "string" }
+            },
+            "required": ["cat_name"],
+            "patternProperties": {
+              "^cat_": { "type": "string" }
+            }
+          },
+          {
+            "properties": {
+              "dog_name": { "type": "string" }
+            },
+            "required": ["dog_name"],
+            "patternProperties": {
+              "^dog_": { "type": "string" }
+            }
+          }
+        ],
+        "unevaluatedProperties": false
+      },
       "Point": {
         "type": "array",
         "prefixItems": [

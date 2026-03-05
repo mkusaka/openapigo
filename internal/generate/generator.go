@@ -606,7 +606,7 @@ func (g *Generator) emitOneOfAnyOfUnevaluatedType(w *strings.Builder, goName str
 		}
 	}
 
-	// Collect branch info and merge branch properties.
+	// Collect branch info, merge branch properties, and collect branch patterns.
 	var branchInfos []unevalBranch
 	for _, branch := range branches {
 		b := branch.Resolved()
@@ -635,6 +635,15 @@ func (g *Generator) emitOneOfAnyOfUnevaluatedType(w *strings.Builder, goName str
 			}
 		}
 		sortStrings(bi.props)
+		// Collect branch-specific patternProperties (matched-branch-only, strict).
+		var bp []string
+		for pattern := range b.PatternProperties {
+			bp = append(bp, pattern)
+		}
+		if len(bp) > 0 {
+			sortStrings(bp)
+			bi.patterns = bp
+		}
 		branchInfos = append(branchInfos, bi)
 	}
 
@@ -652,27 +661,14 @@ func (g *Generator) emitOneOfAnyOfUnevaluatedType(w *strings.Builder, goName str
 		branches: branchInfos,
 	}
 
-	// Collect patternProperties patterns from base and branches.
-	// NOTE: patterns from all branches are included unconditionally (conservative/lenient).
-	// Strictly, only the matched branch's patterns should count as evaluated, but we
-	// can't determine the matching branch at codegen time. Being lenient avoids false
-	// rejections at the cost of allowing some truly unevaluated properties through.
-	var unevalPatterns []string
+	// Collect base patternProperties patterns (always apply).
+	var basePatterns []string
 	for pattern := range s.PatternProperties {
-		unevalPatterns = append(unevalPatterns, pattern)
+		basePatterns = append(basePatterns, pattern)
 	}
-	for _, branch := range branches {
-		b := branch.Resolved()
-		if b == nil {
-			continue
-		}
-		for pattern := range b.PatternProperties {
-			unevalPatterns = append(unevalPatterns, pattern)
-		}
-	}
-	if len(unevalPatterns) > 0 {
-		sortStrings(unevalPatterns)
-		g.unevaluatedPatterns[goName] = unevalPatterns
+	if len(basePatterns) > 0 {
+		sortStrings(basePatterns)
+		g.unevaluatedPatterns[goName] = basePatterns
 	}
 
 	g.emitStructType(w, goName, merged)

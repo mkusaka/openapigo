@@ -107,6 +107,33 @@ func (v *OneOfUneval) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// OneOfWithBranchPatterns represents the schema.
+type OneOfWithBranchPatterns struct {
+	Kind         string          `json:"kind"`
+	CatName      *string         `json:"cat_name,omitzero"`
+	DogName      *string         `json:"dog_name,omitzero"`
+	rawFieldKeys map[string]bool `json:"-"`
+}
+
+// UnmarshalJSON unmarshals JSON and records raw field keys for unevaluatedProperties checking.
+func (v *OneOfWithBranchPatterns) UnmarshalJSON(data []byte) error {
+	type alias OneOfWithBranchPatterns
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*v = OneOfWithBranchPatterns(a)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	v.rawFieldKeys = make(map[string]bool, len(raw))
+	for k := range raw {
+		v.rawFieldKeys[k] = true
+	}
+	return nil
+}
+
 // Point is a tuple type with 2 prefix items.
 type Point []any
 
@@ -245,6 +272,44 @@ func (v OneOfUneval) Validate() error {
 	// oneOf branch 1
 	if v.rawFieldKeys["bark"] {
 		evaluated["bark"] = true
+	}
+	for k := range v.rawFieldKeys {
+		if !evaluated[k] {
+			errs = append(errs, openapigo.ValidationError{Field: k, Constraint: "unevaluatedProperties", Message: fmt.Sprintf("unevaluated property %q", k)})
+		}
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
+}
+
+var patternUnevalBranchOneOfWithBranchPatterns_0_0 = regexp.MustCompile("^cat_")
+var patternUnevalBranchOneOfWithBranchPatterns_1_0 = regexp.MustCompile("^dog_")
+
+// Validate checks all constraints on OneOfWithBranchPatterns.
+func (v OneOfWithBranchPatterns) Validate() error {
+	var errs openapigo.ValidationErrors
+	evaluated := map[string]bool{
+		"kind": true,
+	}
+	// oneOf branch 0
+	if v.rawFieldKeys["cat_name"] {
+		evaluated["cat_name"] = true
+		for k := range v.rawFieldKeys {
+			if !evaluated[k] && patternUnevalBranchOneOfWithBranchPatterns_0_0.MatchString(k) {
+				evaluated[k] = true
+			}
+		}
+	}
+	// oneOf branch 1
+	if v.rawFieldKeys["dog_name"] {
+		evaluated["dog_name"] = true
+		for k := range v.rawFieldKeys {
+			if !evaluated[k] && patternUnevalBranchOneOfWithBranchPatterns_1_0.MatchString(k) {
+				evaluated[k] = true
+			}
+		}
 	}
 	for k := range v.rawFieldKeys {
 		if !evaluated[k] {

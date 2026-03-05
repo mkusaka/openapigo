@@ -305,13 +305,22 @@ func (g *Generator) emitValidateMethod(w *strings.Builder, typeName string, s *s
 		}
 		fmt.Fprintf(w, "\t}\n")
 
-		// oneOf/anyOf branch matching: add branch properties if required fields are present.
+		// oneOf/anyOf branch matching: add branch properties (and patterns) if required fields are present.
 		if bs, ok := g.unevaluatedBranches[typeName]; ok {
 			for i, b := range bs.branches {
 				if len(b.required) == 0 {
 					// No required fields → conservatively include all branch properties.
 					for _, p := range b.props {
 						fmt.Fprintf(w, "\tevaluated[%q] = true\n", p)
+					}
+					// Also include branch patterns unconditionally.
+					for j := range b.patterns {
+						varName := fmt.Sprintf("patternUnevalBranch%s_%d_%d", typeName, i, j)
+						fmt.Fprintf(w, "\tfor k := range v.rawFieldKeys {\n")
+						fmt.Fprintf(w, "\t\tif !evaluated[k] && %s.MatchString(k) {\n", varName)
+						fmt.Fprintf(w, "\t\t\tevaluated[k] = true\n")
+						fmt.Fprintf(w, "\t\t}\n")
+						fmt.Fprintf(w, "\t}\n")
 					}
 				} else {
 					fmt.Fprintf(w, "\t// %s branch %d\n", bs.kind, i)
@@ -325,6 +334,15 @@ func (g *Generator) emitValidateMethod(w *strings.Builder, typeName string, s *s
 					fmt.Fprintf(w, " {\n")
 					for _, p := range b.props {
 						fmt.Fprintf(w, "\t\tevaluated[%q] = true\n", p)
+					}
+					// Matched-branch-only pattern evaluation (strict).
+					for j := range b.patterns {
+						varName := fmt.Sprintf("patternUnevalBranch%s_%d_%d", typeName, i, j)
+						fmt.Fprintf(w, "\t\tfor k := range v.rawFieldKeys {\n")
+						fmt.Fprintf(w, "\t\t\tif !evaluated[k] && %s.MatchString(k) {\n", varName)
+						fmt.Fprintf(w, "\t\t\t\tevaluated[k] = true\n")
+						fmt.Fprintf(w, "\t\t\t}\n")
+						fmt.Fprintf(w, "\t\t}\n")
 					}
 					fmt.Fprintf(w, "\t}\n")
 				}
@@ -575,6 +593,7 @@ func (g *Generator) emitPatternVars(w *strings.Builder, typeName string, s *spec
 type unevalBranch struct {
 	props    []string // JSON property names declared in this branch
 	required []string // required fields in this branch
+	patterns []string // patternProperties patterns in this branch
 }
 
 // unevalBranchSet holds oneOf/anyOf branch info for unevaluated property checking.
@@ -625,15 +644,25 @@ func (g *Generator) emitUnevaluatedUnmarshalJSON(w *strings.Builder, typeName st
 
 // emitUnevaluatedPatternVars emits package-level compiled regexp variables
 // for patternProperties patterns used in unevaluated property checking.
+// Includes base patterns (always-apply) and branch-specific patterns (matched-branch-only).
 func (g *Generator) emitUnevaluatedPatternVars(w *strings.Builder, typeName string) {
-	patterns, ok := g.unevaluatedPatterns[typeName]
-	if !ok {
-		return
+	// Base patterns (always apply).
+	if patterns, ok := g.unevaluatedPatterns[typeName]; ok {
+		g.imports["regexp"] = true
+		for i, pattern := range patterns {
+			varName := fmt.Sprintf("patternUneval%s%d", typeName, i)
+			fmt.Fprintf(w, "var %s = regexp.MustCompile(%q)\n", varName, pattern)
+		}
 	}
-	g.imports["regexp"] = true
-	for i, pattern := range patterns {
-		varName := fmt.Sprintf("patternUneval%s%d", typeName, i)
-		fmt.Fprintf(w, "var %s = regexp.MustCompile(%q)\n", varName, pattern)
+	// Branch-specific patterns (matched-branch-only).
+	if bs, ok := g.unevaluatedBranches[typeName]; ok {
+		for i, b := range bs.branches {
+			for j, pattern := range b.patterns {
+				g.imports["regexp"] = true
+				varName := fmt.Sprintf("patternUnevalBranch%s_%d_%d", typeName, i, j)
+				fmt.Fprintf(w, "var %s = regexp.MustCompile(%q)\n", varName, pattern)
+			}
+		}
 	}
 }
 
