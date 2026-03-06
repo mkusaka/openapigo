@@ -6,15 +6,6 @@ It provides:
 - A CLI (`openapigo`) that generates Go client packages from OpenAPI specs.
 - A runtime module (`github.com/mkusaka/openapigo`) used by generated code.
 
-## Current Status
-
-Recent milestone work (M9-M13) is completed on `main`:
-- M9: Request body media types (including multipart/form-data and binary payload handling).
-- M10: CLI generation flags (`--skip-validation`, `--no-read-write-types`, `--dry-run`, `--format-mapping`, `--strict-enums`, `--validate-on-unmarshal`).
-- M11: Expanded test coverage (generator and runtime).
-- M12: External `$ref` resolution (file/URL) with OAS 3.1 sibling keyword support.
-- M13: OAS 3.1 schema extensions (`if/then/else`, `patternProperties`, `dependentRequired`, `dependentSchemas`, `unevaluated*`, `$id`, `$anchor`, `const`).
-
 ## Requirements
 
 - Go 1.24+
@@ -26,12 +17,6 @@ Install the CLI:
 
 ```bash
 go install github.com/mkusaka/openapigo/cmd/openapigo@latest
-```
-
-Check the installed version:
-
-```bash
-openapigo version
 ```
 
 ## Quick Start
@@ -56,38 +41,97 @@ Commands:
 
 `generate` flags:
 
-- `-i`: Path to an OpenAPI spec file.
-- `-o`: Output directory for generated code.
-- `-package`: Go package name (default: output directory name).
-- `--skip-validation`: Skip `Validate()` method generation.
-- `--no-read-write-types`: Skip request/response variant type generation.
-- `--dry-run`: Print generated file names and sizes without writing.
-- `--format-mapping`: Custom format-to-type mapping (for example `uuid=github.com/google/uuid.UUID`).
-- `--strict-enums`: Generate validation for non-string enums.
-- `--validate-on-unmarshal`: Generate `UnmarshalJSON` methods that call `Validate()`.
-- `--resolve`: Resolve external `$ref` (file and URL).
-- `--allow-http`: Allow `http://` URLs for remote `$ref` (requires `--resolve`).
+| Flag | Description |
+|------|-------------|
+| `-i` | Path to an OpenAPI spec file |
+| `-o` | Output directory for generated code |
+| `-package` | Go package name (default: output directory name) |
+| `--skip-validation` | Skip `Validate()` method generation |
+| `--no-read-write-types` | Skip request/response variant type generation |
+| `--dry-run` | Print generated file names and sizes without writing |
+| `--format-mapping` | Custom format-to-type mapping (e.g. `uuid=github.com/google/uuid.UUID`) |
+| `--strict-enums` | Generate validation for non-string enums |
+| `--validate-on-unmarshal` | Generate `UnmarshalJSON` methods that call `Validate()` |
+| `--resolve` | Resolve external `$ref` (file and URL) |
+| `--allow-http` | Allow `http://` URLs for remote `$ref` (requires `--resolve`) |
+| `--resolve-header` | Custom headers for remote `$ref` fetches (comma-separated `key:value`) |
+| `--resolve-timeout` | Timeout for remote `$ref` fetches (e.g. `30s`, `1m`) |
 
-## Generated Package Layout
+## Features
+
+### OpenAPI 3.0 / 3.1
+
+- Schema-to-Go type mapping (object, array, primitive, enum)
+- `allOf` / `oneOf` / `anyOf` composition
+- `$ref` resolution (local, file, and URL)
+- `$id` / `$anchor` resolution with relative URI chain (OAS 3.1, RFC 3986)
+- `if` / `then` / `else` conditional schemas (OAS 3.1)
+- `patternProperties` / `additionalProperties`
+- `dependentRequired` / `dependentSchemas`
+- `prefixItems`
+- `unevaluatedProperties` / `unevaluatedItems`
+- Request body media types: `application/json`, `multipart/form-data`, `application/x-www-form-urlencoded`, `application/octet-stream`, `text/plain`
+- Parameter serialization styles: `simple`, `form`, `label`, `matrix`, `deepObject`, `spaceDelimited`, `pipeDelimited`
+- Security schemes: `apiKey`, `http` (basic/bearer)
+- `Validate()` methods with pattern, min/max, enum checks
+- Read/write variant types (request-only / response-only fields)
+
+### Generated Package Layout
 
 The generator writes files under your output directory:
-- `types.go`
-- `operations.go`
-- `endpoints.go`
-- `auth.go` (only when auth schemes are present)
+- `types.go` — Schema types, enums, validation methods
+- `operations.go` — Operation functions with request/response types
+- `endpoints.go` — Endpoint definitions with HTTP method and path
+- `auth.go` — Security scheme helpers (only when auth schemes are present)
 
-## Docs
+## Known Limitations
 
-Architecture decisions are documented in [`docs/adr`](./docs/adr).
+### `unevaluatedItems: {schema}`
+
+When `unevaluatedItems` specifies a schema object (not just `false`), validation is generated only for primitive types (`string`, `number`, `integer`, `boolean`). Complex schemas (nested objects, `$ref`, composition) are silently skipped.
+
+### `contains`
+
+The `contains` keyword is parsed but not used in type or validation generation. Schemas relying on `contains` for runtime validation are not supported.
+
+### `unevaluatedItems` and `contains`
+
+Because `contains` is not evaluated at codegen time, `unevaluatedItems` validation does not account for indices matched by `contains`.
+
+### `unevaluatedProperties` branch matching
+
+For `oneOf`/`anyOf` with `unevaluatedProperties`, the generator uses a heuristic (required-key presence) to determine which branch matched at runtime. This is a static approximation — full runtime evaluation of each subschema is not performed. In rare cases where branches differ only by non-required properties, the heuristic may select the wrong branch.
+
+### `discriminator`
+
+The `discriminator` keyword is not supported. `oneOf`/`anyOf` schemas generate a union type (`any`) without discriminator-based type narrowing.
+
+### `const`
+
+The `const` keyword is parsed but not reflected in generated types or validation.
+
+### `oauth2` / `openIdConnect`
+
+Only `apiKey` and `http` (basic/bearer) security schemes generate helper code. `oauth2` and `openIdConnect` schemes are recognized but no client-side token handling is generated.
 
 ## Development
+
+CI runs on GitHub Actions (push/PR to `main`):
+
+```
+gofmt check → go fix check → golangci-lint → go test -race
+```
 
 Run checks locally:
 
 ```bash
+golangci-lint run ./...
 go test ./... -count=1 -race -timeout 300s
-go vet ./...
 ```
+
+## Docs
+
+Architecture decisions are documented in [`docs/adr`](./docs/adr).
 
 ## License
 
