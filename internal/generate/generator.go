@@ -33,21 +33,21 @@ type Config struct {
 
 // Generator holds state during code generation.
 type Generator struct {
-	config             Config
-	doc                *spec.Document
-	schemaNames        map[*spec.Schema]string // schema pointer → Go type name
-	inlineSchemas      []namedSchema           // inline schemas to emit
-	imports            map[string]bool         // import paths needed
-	usedNames          map[string]int          // name → count for collision detection
-	opNames            map[string]string       // operationID → Go name (cached, idempotent)
-	usedOpNames        map[string]bool         // set of assigned operation Go names (O(1) lookup)
-	bodyContentType    string                  // set during body type/field emission
-	multipartTypeNames map[string]bool         // Go type names that need File for format:binary
-	multipartNameCache map[string]string       // component schema name → generated multipart type name
-	extraTypeDefs      []string                // extra type definitions (e.g., union body structs)
-	unevaluatedEvalKeys  map[string][]string          // typeName → sorted evaluated property names (JSON keys)
-	unevaluatedPatterns  map[string][]string          // typeName → regex patterns from patternProperties
-	unevaluatedBranches  map[string]*unevalBranchSet  // typeName → oneOf/anyOf branch info
+	config              Config
+	doc                 *spec.Document
+	schemaNames         map[*spec.Schema]string     // schema pointer → Go type name
+	inlineSchemas       []namedSchema               // inline schemas to emit
+	imports             map[string]bool             // import paths needed
+	usedNames           map[string]int              // name → count for collision detection
+	opNames             map[string]string           // operationID → Go name (cached, idempotent)
+	usedOpNames         map[string]bool             // set of assigned operation Go names (O(1) lookup)
+	bodyContentType     string                      // set during body type/field emission
+	multipartTypeNames  map[string]bool             // Go type names that need File for format:binary
+	multipartNameCache  map[string]string           // component schema name → generated multipart type name
+	extraTypeDefs       []string                    // extra type definitions (e.g., union body structs)
+	unevaluatedEvalKeys map[string][]string         // typeName → sorted evaluated property names (JSON keys)
+	unevaluatedPatterns map[string][]string         // typeName → regex patterns from patternProperties
+	unevaluatedBranches map[string]*unevalBranchSet // typeName → oneOf/anyOf branch info
 }
 
 // Run executes the full generation pipeline.
@@ -85,18 +85,18 @@ func Run(cfg Config) error {
 	}
 
 	g := &Generator{
-		config:             cfg,
-		doc:                doc,
-		schemaNames:        make(map[*spec.Schema]string),
-		imports:            make(map[string]bool),
-		usedNames:          make(map[string]int),
-		opNames:            make(map[string]string),
-		usedOpNames:        make(map[string]bool),
+		config:              cfg,
+		doc:                 doc,
+		schemaNames:         make(map[*spec.Schema]string),
+		imports:             make(map[string]bool),
+		usedNames:           make(map[string]int),
+		opNames:             make(map[string]string),
+		usedOpNames:         make(map[string]bool),
 		multipartTypeNames:  make(map[string]bool),
 		multipartNameCache:  make(map[string]string),
-		unevaluatedEvalKeys:  make(map[string][]string),
-		unevaluatedPatterns:  make(map[string][]string),
-		unevaluatedBranches:  make(map[string]*unevalBranchSet),
+		unevaluatedEvalKeys: make(map[string][]string),
+		unevaluatedPatterns: make(map[string][]string),
+		unevaluatedBranches: make(map[string]*unevalBranchSet),
 	}
 
 	// 3. Assign names to component schemas.
@@ -347,7 +347,7 @@ func (g *Generator) generateTypes(source string) string {
 				g.emitReadWriteVariants(&typeDefs, ns.name, resolved)
 			}
 		}
-		allSchemas = append(allSchemas, schemaEntry{ns.name, ns.schema})
+		allSchemas = append(allSchemas, schemaEntry(ns))
 	}
 
 	// Emit pattern variables and Validate() methods.
@@ -947,37 +947,6 @@ func contentTypeFieldName(ct string) string {
 	}
 }
 
-// requestBodyInfo returns the schema and content type for a request body.
-// Prefers application/json; falls back to other content types.
-func (g *Generator) requestBodyInfo(rb *spec.RequestBody) (*spec.Schema, string) {
-	if rb == nil || rb.Content == nil {
-		return nil, ""
-	}
-	// Prefer application/json.
-	if mt, ok := rb.Content["application/json"]; ok && mt != nil && mt.Schema != nil {
-		return mt.Schema, "application/json"
-	}
-	// Fall back: try known content types in preference order.
-	for _, ct := range []string{"multipart/form-data", "application/x-www-form-urlencoded", "application/octet-stream"} {
-		if mt, ok := rb.Content[ct]; ok && mt != nil && mt.Schema != nil {
-			return mt.Schema, ct
-		}
-	}
-	// Last resort: pick any content type with a schema.
-	var cts []string
-	for ct := range rb.Content {
-		cts = append(cts, ct)
-	}
-	sort.Strings(cts) // deterministic order
-	for _, ct := range cts {
-		mt := rb.Content[ct]
-		if mt != nil && mt.Schema != nil {
-			return mt.Schema, ct
-		}
-	}
-	return nil, ""
-}
-
 // bodyTypeForEntry returns the Go type string for a single content type entry.
 // Used both for single-body and union-body code paths.
 func (g *Generator) bodyTypeForEntry(entry contentTypeEntry, opName, fieldName string, imports map[string]bool) string {
@@ -1289,7 +1258,7 @@ func (g *Generator) collectErrorHandlers(op *spec.Operation, opName string, impo
 			// Range code like "4XX", "5XX" → negative prefix: -4, -5
 			statusCode = -int(code[0] - '0')
 		} else {
-			fmt.Sscanf(code, "%d", &statusCode)
+			_, _ = fmt.Sscanf(code, "%d", &statusCode)
 		}
 		handlers = append(handlers, errorHandlerInfo{statusCode: statusCode, goType: goType})
 	}

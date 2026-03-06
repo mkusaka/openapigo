@@ -114,7 +114,7 @@ func DoRaw[Req any](ctx context.Context, client *Client, endpoint Endpoint[Req, 
 	resp, err := executeWithMiddleware(client, httpReq)
 	if err != nil {
 		if httpReq.Body != nil {
-			httpReq.Body.Close()
+			_ = httpReq.Body.Close()
 		}
 		return nil, err
 	}
@@ -133,11 +133,11 @@ func doInternal[Req, Resp any](ctx context.Context, client *Client, endpoint End
 		// Close the request body to unblock any goroutine writing to a pipe
 		// (e.g., multipart/form-data streaming via io.Pipe).
 		if httpReq.Body != nil {
-			httpReq.Body.Close()
+			_ = httpReq.Body.Close()
 		}
 		return nil, nil, err
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	// Limit response body to prevent OOM from malicious/large responses.
 	// Default: 64 MiB. Can be increased via custom middleware if needed.
@@ -182,7 +182,7 @@ func buildRequest[Req any](ctx context.Context, client *Client, method, pathTmpl
 	if err != nil {
 		// Close bodyReader to prevent goroutine leak (e.g., multipart io.Pipe writer).
 		if closer, ok := bodyReader.(io.Closer); ok {
-			closer.Close()
+			_ = closer.Close()
 		}
 		return nil, err
 	}
@@ -224,7 +224,7 @@ func isNilReader(v reflect.Value) bool {
 		elem := v.Elem()
 		return isNilishKind(elem)
 	}
-	if v.Kind() == reflect.Ptr {
+	if v.Kind() == reflect.Pointer {
 		return v.IsNil()
 	}
 	return false
@@ -233,7 +233,7 @@ func isNilReader(v reflect.Value) bool {
 // isNilishKind reports whether the value is a nil-able kind that is nil.
 func isNilishKind(v reflect.Value) bool {
 	switch v.Kind() {
-	case reflect.Ptr, reflect.Map, reflect.Slice, reflect.Chan, reflect.Func:
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Chan, reflect.Func:
 		return v.IsNil()
 	default:
 		return false
@@ -292,7 +292,7 @@ var ErrNoMediaType = fmt.Errorf("openapigo: exactly one media type must be set i
 // If no field is set, ErrNoMediaType is returned; if more than one is set,
 // ErrAmbiguousMediaType is returned.
 func encodeUnionBody(fv reflect.Value, codec JSONCodec) (io.Reader, string, error) {
-	if fv.Kind() == reflect.Ptr {
+	if fv.Kind() == reflect.Pointer {
 		if fv.IsNil() {
 			return nil, "", nil
 		}
@@ -365,7 +365,7 @@ func encodeUnionBody(fv reflect.Value, codec JSONCodec) (io.Reader, string, erro
 // encodeBinaryBody encodes a []byte or io.Reader body field.
 // Handles both direct values and pointer types (e.g., *[]byte for optional bodies).
 func encodeBinaryBody(fv reflect.Value) (io.Reader, string, error) {
-	if fv.Kind() == reflect.Ptr {
+	if fv.Kind() == reflect.Pointer {
 		if fv.IsNil() {
 			return nil, "", nil
 		}
@@ -387,7 +387,7 @@ func encodeBinaryBody(fv reflect.Value) (io.Reader, string, error) {
 
 // encodeTextPlain encodes a string or *string body field as text/plain.
 func encodeTextPlain(fv reflect.Value) (io.Reader, string, error) {
-	if fv.Kind() == reflect.Ptr {
+	if fv.Kind() == reflect.Pointer {
 		if fv.IsNil() {
 			return nil, "", nil
 		}
@@ -424,7 +424,7 @@ func formFieldName(field reflect.StructField) (name string, skip bool) {
 // For structs, fields tagged with form:"name" (or json:"name" as fallback) become form values.
 // For maps (from additionalProperties schemas), keys are used as form field names.
 func encodeFormURLEncoded(fv reflect.Value) (io.Reader, string, error) {
-	if fv.Kind() == reflect.Ptr {
+	if fv.Kind() == reflect.Pointer {
 		fv = fv.Elem()
 	}
 	vals := url.Values{}
@@ -449,7 +449,7 @@ func encodeFormURLEncoded(fv reflect.Value) (io.Reader, string, error) {
 			if skip {
 				continue
 			}
-			if fieldVal.Kind() == reflect.Ptr {
+			if fieldVal.Kind() == reflect.Pointer {
 				if fieldVal.IsNil() {
 					continue
 				}
@@ -475,7 +475,7 @@ func encodeFormURLEncoded(fv reflect.Value) (io.Reader, string, error) {
 // Fields of type []byte, io.Reader, or File become file parts.
 // Uses io.Pipe for streaming to avoid buffering entire payloads in memory.
 func encodeMultipartBody(fv reflect.Value) (io.Reader, string, error) {
-	if fv.Kind() == reflect.Ptr {
+	if fv.Kind() == reflect.Pointer {
 		fv = fv.Elem()
 	}
 	if fv.Kind() != reflect.Struct {
@@ -517,7 +517,7 @@ func writeMultipartFields(w *multipart.Writer, fv reflect.Value) error {
 
 		// Check io.Reader on pointer BEFORE dereferencing — pointer receiver methods
 		// (e.g., *bytes.Buffer) are lost when calling Elem().
-		if fieldVal.Kind() == reflect.Ptr {
+		if fieldVal.Kind() == reflect.Pointer {
 			if fieldVal.IsNil() {
 				continue
 			}
@@ -548,7 +548,7 @@ func writeMultipartFields(w *multipart.Writer, fv reflect.Value) error {
 			if f.Reader != nil {
 				_, copyErr := io.Copy(part, f.Reader)
 				if rc, ok := f.Reader.(io.ReadCloser); ok {
-					rc.Close()
+					_ = rc.Close()
 				}
 				if copyErr != nil {
 					return copyErr
@@ -572,7 +572,7 @@ func writeMultipartFields(w *multipart.Writer, fv reflect.Value) error {
 			}
 		} else if fieldVal.Kind() == reflect.Slice {
 			// Check for []File slices.
-			if fieldVal.Type().Elem() == reflect.TypeOf(File{}) {
+			if fieldVal.Type().Elem() == reflect.TypeFor[File]() {
 				for j := range fieldVal.Len() {
 					f := fieldVal.Index(j).Interface().(File)
 					filename := f.Name
@@ -586,7 +586,7 @@ func writeMultipartFields(w *multipart.Writer, fv reflect.Value) error {
 					if f.Reader != nil {
 						_, copyErr := io.Copy(part, f.Reader)
 						if rc, ok := f.Reader.(io.ReadCloser); ok {
-							rc.Close()
+							_ = rc.Close()
 						}
 						if copyErr != nil {
 							return copyErr

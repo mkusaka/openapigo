@@ -31,7 +31,7 @@ var metaCache sync.Map // map[reflect.Type]*structMeta
 // parseStructMeta extracts parameter metadata from struct tags.
 // Tags: path:"name", query:"name", header:"name", cookie:"name", body:"mediaType"
 func parseStructMeta(t reflect.Type) *structMeta {
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t.Kind() != reflect.Struct {
@@ -106,7 +106,7 @@ func buildPath(tmpl string, req any) string {
 		return tmpl
 	}
 	rv := reflect.ValueOf(req)
-	if rv.Kind() == reflect.Ptr {
+	if rv.Kind() == reflect.Pointer {
 		rv = rv.Elem()
 	}
 	if rv.Kind() != reflect.Struct {
@@ -121,7 +121,7 @@ func buildPath(tmpl string, req any) string {
 		}
 		fv := rv.Field(fm.index)
 		// Dereference pointer.
-		if fv.Kind() == reflect.Ptr {
+		if fv.Kind() == reflect.Pointer {
 			if fv.IsNil() {
 				continue
 			}
@@ -254,7 +254,7 @@ func buildQuery(u *url.URL, req any) {
 		return
 	}
 	rv := reflect.ValueOf(req)
-	if rv.Kind() == reflect.Ptr {
+	if rv.Kind() == reflect.Pointer {
 		rv = rv.Elem()
 	}
 	if rv.Kind() != reflect.Struct {
@@ -272,7 +272,7 @@ func buildQuery(u *url.URL, req any) {
 			continue
 		}
 		// Dereference pointer.
-		if fv.Kind() == reflect.Ptr {
+		if fv.Kind() == reflect.Pointer {
 			if fv.IsNil() {
 				continue
 			}
@@ -380,7 +380,7 @@ func serializeQueryDeepObject(q url.Values, name string, fv reflect.Value) {
 			if idx := strings.IndexByte(fieldName, ','); idx != -1 {
 				fieldName = fieldName[:idx]
 			}
-			if fieldVal.Kind() == reflect.Ptr {
+			if fieldVal.Kind() == reflect.Pointer {
 				if fieldVal.IsNil() {
 					continue
 				}
@@ -400,7 +400,7 @@ func setHeaders(header map[string][]string, req any) {
 		return
 	}
 	rv := reflect.ValueOf(req)
-	if rv.Kind() == reflect.Ptr {
+	if rv.Kind() == reflect.Pointer {
 		rv = rv.Elem()
 	}
 	if rv.Kind() != reflect.Struct {
@@ -416,7 +416,7 @@ func setHeaders(header map[string][]string, req any) {
 		if shouldSkipParam(fv) {
 			continue
 		}
-		if fv.Kind() == reflect.Ptr {
+		if fv.Kind() == reflect.Pointer {
 			fv = fv.Elem()
 		}
 		// OpenAPI simple style: arrays are comma-separated.
@@ -438,7 +438,7 @@ func setCookies(req *http.Request, reqVal any) {
 		return
 	}
 	rv := reflect.ValueOf(reqVal)
-	if rv.Kind() == reflect.Ptr {
+	if rv.Kind() == reflect.Pointer {
 		rv = rv.Elem()
 	}
 	if rv.Kind() != reflect.Struct {
@@ -454,7 +454,7 @@ func setCookies(req *http.Request, reqVal any) {
 		if shouldSkipParam(fv) {
 			continue
 		}
-		if fv.Kind() == reflect.Ptr {
+		if fv.Kind() == reflect.Pointer {
 			if fv.IsNil() {
 				continue
 			}
@@ -481,7 +481,7 @@ func setCookies(req *http.Request, reqVal any) {
 // formatValue converts a reflect.Value to its string representation.
 // time.Time values are formatted as RFC3339 for OpenAPI date-time parameters.
 func formatValue(v reflect.Value) string {
-	if v.Kind() == reflect.Ptr {
+	if v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			return ""
 		}
@@ -493,30 +493,12 @@ func formatValue(v reflect.Value) string {
 	return fmt.Sprintf("%v", v.Interface())
 }
 
-// isZeroValue reports whether the value is the zero value for its type.
-func isZeroValue(v reflect.Value) bool {
-	switch v.Kind() {
-	case reflect.Ptr, reflect.Interface:
-		return v.IsNil()
-	case reflect.Slice, reflect.Map:
-		return v.IsNil()
-	case reflect.Struct:
-		// Check if it implements IsZero (e.g., Nullable[T]).
-		if iz, ok := v.Interface().(interface{ IsZero() bool }); ok {
-			return iz.IsZero()
-		}
-		return v.IsZero()
-	default:
-		return v.IsZero()
-	}
-}
-
 // isNilValue reports whether the value is nil.
 // Unlike isZeroValue, it does not treat scalar zero values (0, false, "") as empty,
 // which preserves required non-pointer fields with valid zero values.
 func isNilValue(v reflect.Value) bool {
 	switch v.Kind() {
-	case reflect.Ptr, reflect.Interface:
+	case reflect.Pointer, reflect.Interface:
 		return v.IsNil()
 	case reflect.Slice, reflect.Map:
 		return v.IsNil()
@@ -530,7 +512,7 @@ func isNilValue(v reflect.Value) bool {
 // Non-pointer zero values (0, false, "") are NOT skipped — they represent valid required param values.
 func shouldSkipParam(fv reflect.Value) bool {
 	switch fv.Kind() {
-	case reflect.Ptr, reflect.Interface:
+	case reflect.Pointer, reflect.Interface:
 		return fv.IsNil()
 	case reflect.Slice, reflect.Map:
 		return fv.IsNil()

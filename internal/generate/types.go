@@ -3,6 +3,7 @@ package generate
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -511,9 +512,7 @@ func (g *Generator) mergeConditionalProperties(s *spec.Schema) *spec.Schema {
 	merged.PropertyOrder = append(merged.PropertyOrder, s.PropertyOrder...)
 
 	// Copy base properties.
-	for name, prop := range s.Properties {
-		merged.Properties[name] = prop
-	}
+	maps.Copy(merged.Properties, s.Properties)
 
 	// Merge then/else properties (as optional, not adding to required).
 	for _, branch := range []*spec.Schema{s.Then, s.Else} {

@@ -12,10 +12,10 @@ import (
 
 // ResolveConfig holds options for external $ref resolution.
 type ResolveConfig struct {
-	BaseDir        string            // base directory for resolving relative file paths
-	AllowHTTP      bool              // allow http:// (not just https://) for remote refs
-	Headers        map[string]string // custom headers for remote fetches
-	Timeout        time.Duration     // timeout for remote fetches (default 30s)
+	BaseDir   string            // base directory for resolving relative file paths
+	AllowHTTP bool              // allow http:// (not just https://) for remote refs
+	Headers   map[string]string // custom headers for remote fetches
+	Timeout   time.Duration     // timeout for remote fetches (default 30s)
 }
 
 // isOAS31 returns true if the document's OpenAPI version is >= 3.1.
@@ -54,14 +54,14 @@ func ResolveWithExternal(doc *Document, cfg ResolveConfig) error {
 
 type resolver struct {
 	doc        *Document
-	visited    map[string]bool  // tracks visited $ref to detect cycles
-	resolved   map[*Schema]bool // memoize fully resolved schemas
-	extCfg     *ResolveConfig   // nil = no external resolution
+	visited    map[string]bool      // tracks visited $ref to detect cycles
+	resolved   map[*Schema]bool     // memoize fully resolved schemas
+	extCfg     *ResolveConfig       // nil = no external resolution
 	docCache   map[string]*Document // cached external documents
-	httpClient *http.Client     // reused HTTP client for remote fetches
-	oas31      bool             // true if OAS >= 3.1 (affects $ref sibling keyword handling)
-	anchors    map[string]*Schema // $anchor → schema (OAS 3.1)
-	idIndex    map[string]*Schema // absolute URI (from $id) → schema (OAS 3.1)
+	httpClient *http.Client         // reused HTTP client for remote fetches
+	oas31      bool                 // true if OAS >= 3.1 (affects $ref sibling keyword handling)
+	anchors    map[string]*Schema   // $anchor → schema (OAS 3.1)
+	idIndex    map[string]*Schema   // absolute URI (from $id) → schema (OAS 3.1)
 }
 
 func (r *resolver) resolveAll() error {
@@ -517,8 +517,8 @@ func (r *resolver) resolveSchemaRef(ref string) (*Schema, error) {
 		if r.oas31 && r.idIndex != nil {
 			// Split URI and fragment: "https://example.com/foo#bar" → ("https://example.com/foo", "bar")
 			uri, frag := ref, ""
-			if idx := strings.IndexByte(ref, '#'); idx >= 0 {
-				uri, frag = ref[:idx], ref[idx+1:]
+			if before, after, ok := strings.Cut(ref, "#"); ok {
+				uri, frag = before, after
 			}
 			if s, ok := r.idIndex[uri]; ok {
 				if frag == "" {
@@ -807,7 +807,7 @@ func (r *resolver) fetchRemoteDoc(rawURL string) (*Document, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fetch %q: %w", rawURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch %q: HTTP %d", rawURL, resp.StatusCode)

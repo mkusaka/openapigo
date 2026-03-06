@@ -6,10 +6,10 @@ package spec
 type Document struct {
 	OpenAPI    string                `json:"openapi" yaml:"openapi"`
 	Info       Info                  `json:"info" yaml:"info"`
-	Paths      map[string]*PathItem `json:"paths" yaml:"paths"`
-	Components *Components          `json:"components,omitempty" yaml:"components,omitempty"`
+	Paths      map[string]*PathItem  `json:"paths" yaml:"paths"`
+	Components *Components           `json:"components,omitempty" yaml:"components,omitempty"`
 	Security   []SecurityRequirement `json:"security,omitempty" yaml:"security,omitempty"`
-	Tags       []Tag                `json:"tags,omitempty" yaml:"tags,omitempty"`
+	Tags       []Tag                 `json:"tags,omitempty" yaml:"tags,omitempty"`
 
 	// PathOrder preserves the iteration order of paths from the source file.
 	PathOrder []string `json:"-" yaml:"-"`
@@ -30,14 +30,14 @@ type Tag struct {
 
 // PathItem describes operations available on a single path.
 type PathItem struct {
-	Ref         string     `json:"$ref,omitempty" yaml:"$ref,omitempty"`
-	Summary     string     `json:"summary,omitempty" yaml:"summary,omitempty"`
-	Description string     `json:"description,omitempty" yaml:"description,omitempty"`
-	Get         *Operation `json:"get,omitempty" yaml:"get,omitempty"`
-	Put         *Operation `json:"put,omitempty" yaml:"put,omitempty"`
-	Post        *Operation `json:"post,omitempty" yaml:"post,omitempty"`
-	Delete      *Operation `json:"delete,omitempty" yaml:"delete,omitempty"`
-	Patch       *Operation `json:"patch,omitempty" yaml:"patch,omitempty"`
+	Ref         string            `json:"$ref,omitempty" yaml:"$ref,omitempty"`
+	Summary     string            `json:"summary,omitempty" yaml:"summary,omitempty"`
+	Description string            `json:"description,omitempty" yaml:"description,omitempty"`
+	Get         *Operation        `json:"get,omitempty" yaml:"get,omitempty"`
+	Put         *Operation        `json:"put,omitempty" yaml:"put,omitempty"`
+	Post        *Operation        `json:"post,omitempty" yaml:"post,omitempty"`
+	Delete      *Operation        `json:"delete,omitempty" yaml:"delete,omitempty"`
+	Patch       *Operation        `json:"patch,omitempty" yaml:"patch,omitempty"`
 	Parameters  []*ParameterOrRef `json:"parameters,omitempty" yaml:"parameters,omitempty"`
 }
 
@@ -85,15 +85,15 @@ func (p *PathItem) Operations() []struct {
 
 // Operation describes a single API operation on a path.
 type Operation struct {
-	OperationID string            `json:"operationId,omitempty" yaml:"operationId,omitempty"`
-	Summary     string            `json:"summary,omitempty" yaml:"summary,omitempty"`
-	Description string            `json:"description,omitempty" yaml:"description,omitempty"`
-	Tags        []string          `json:"tags,omitempty" yaml:"tags,omitempty"`
-	Parameters  []*ParameterOrRef `json:"parameters,omitempty" yaml:"parameters,omitempty"`
-	RequestBody *RequestBodyOrRef `json:"requestBody,omitempty" yaml:"requestBody,omitempty"`
+	OperationID string                    `json:"operationId,omitempty" yaml:"operationId,omitempty"`
+	Summary     string                    `json:"summary,omitempty" yaml:"summary,omitempty"`
+	Description string                    `json:"description,omitempty" yaml:"description,omitempty"`
+	Tags        []string                  `json:"tags,omitempty" yaml:"tags,omitempty"`
+	Parameters  []*ParameterOrRef         `json:"parameters,omitempty" yaml:"parameters,omitempty"`
+	RequestBody *RequestBodyOrRef         `json:"requestBody,omitempty" yaml:"requestBody,omitempty"`
 	Responses   map[string]*ResponseOrRef `json:"responses,omitempty" yaml:"responses,omitempty"`
 	Security    []SecurityRequirement     `json:"security,omitempty" yaml:"security,omitempty"`
-	Deprecated  bool              `json:"deprecated,omitempty" yaml:"deprecated,omitempty"`
+	Deprecated  bool                      `json:"deprecated,omitempty" yaml:"deprecated,omitempty"`
 }
 
 // ParameterOrRef is either a Parameter or a $ref.
@@ -122,8 +122,8 @@ type RequestBodyOrRef struct {
 
 // RequestBody describes a request body.
 type RequestBody struct {
-	Description string               `json:"description,omitempty" yaml:"description,omitempty"`
-	Required    bool                 `json:"required,omitempty" yaml:"required,omitempty"`
+	Description string                `json:"description,omitempty" yaml:"description,omitempty"`
+	Required    bool                  `json:"required,omitempty" yaml:"required,omitempty"`
 	Content     map[string]*MediaType `json:"content,omitempty" yaml:"content,omitempty"`
 }
 
@@ -140,8 +140,8 @@ type ResponseOrRef struct {
 
 // Response describes a single response from an API operation.
 type Response struct {
-	Description string               `json:"description,omitempty" yaml:"description,omitempty"`
-	Content     map[string]*MediaType `json:"content,omitempty" yaml:"content,omitempty"`
+	Description string                  `json:"description,omitempty" yaml:"description,omitempty"`
+	Content     map[string]*MediaType   `json:"content,omitempty" yaml:"content,omitempty"`
 	Headers     map[string]*HeaderOrRef `json:"headers,omitempty" yaml:"headers,omitempty"`
 }
 
@@ -159,23 +159,23 @@ type Header struct {
 
 // Components holds reusable objects.
 type Components struct {
-	Schemas         map[string]*Schema           `json:"schemas,omitempty" yaml:"schemas,omitempty"`
-	Parameters      map[string]*Parameter        `json:"parameters,omitempty" yaml:"parameters,omitempty"`
-	Responses       map[string]*Response         `json:"responses,omitempty" yaml:"responses,omitempty"`
-	RequestBodies   map[string]*RequestBody      `json:"requestBodies,omitempty" yaml:"requestBodies,omitempty"`
-	SecuritySchemes map[string]*SecurityScheme   `json:"securitySchemes,omitempty" yaml:"securitySchemes,omitempty"`
+	Schemas         map[string]*Schema         `json:"schemas,omitempty" yaml:"schemas,omitempty"`
+	Parameters      map[string]*Parameter      `json:"parameters,omitempty" yaml:"parameters,omitempty"`
+	Responses       map[string]*Response       `json:"responses,omitempty" yaml:"responses,omitempty"`
+	RequestBodies   map[string]*RequestBody    `json:"requestBodies,omitempty" yaml:"requestBodies,omitempty"`
+	SecuritySchemes map[string]*SecurityScheme `json:"securitySchemes,omitempty" yaml:"securitySchemes,omitempty"`
 }
 
 // SecurityScheme describes a security scheme.
 type SecurityScheme struct {
-	Type         string     `json:"type" yaml:"type"` // apiKey, http, oauth2, openIdConnect
-	Description  string     `json:"description,omitempty" yaml:"description,omitempty"`
-	Name         string     `json:"name,omitempty" yaml:"name,omitempty"`     // for apiKey
-	In           string     `json:"in,omitempty" yaml:"in,omitempty"`         // for apiKey: query, header, cookie
-	Scheme       string     `json:"scheme,omitempty" yaml:"scheme,omitempty"` // for http: bearer, basic
-	BearerFormat string     `json:"bearerFormat,omitempty" yaml:"bearerFormat,omitempty"`
-	Flows        *OAuthFlows `json:"flows,omitempty" yaml:"flows,omitempty"`
-	OpenIDConnectURL string `json:"openIdConnectUrl,omitempty" yaml:"openIdConnectUrl,omitempty"`
+	Type             string      `json:"type" yaml:"type"` // apiKey, http, oauth2, openIdConnect
+	Description      string      `json:"description,omitempty" yaml:"description,omitempty"`
+	Name             string      `json:"name,omitempty" yaml:"name,omitempty"`     // for apiKey
+	In               string      `json:"in,omitempty" yaml:"in,omitempty"`         // for apiKey: query, header, cookie
+	Scheme           string      `json:"scheme,omitempty" yaml:"scheme,omitempty"` // for http: bearer, basic
+	BearerFormat     string      `json:"bearerFormat,omitempty" yaml:"bearerFormat,omitempty"`
+	Flows            *OAuthFlows `json:"flows,omitempty" yaml:"flows,omitempty"`
+	OpenIDConnectURL string      `json:"openIdConnectUrl,omitempty" yaml:"openIdConnectUrl,omitempty"`
 }
 
 // OAuthFlows describes OAuth2 flows.

@@ -18,7 +18,7 @@ func writeFileAtomic(path string, content []byte) error {
 	formatted, err := format.Source(content)
 	if err != nil {
 		// Write unformatted for debugging.
-		os.WriteFile(path+".unformatted", content, 0o644)
+		_ = os.WriteFile(path+".unformatted", content, 0o644)
 		return fmt.Errorf("gofmt %s: %w", filepath.Base(path), err)
 	}
 
@@ -31,18 +31,18 @@ func writeFileAtomic(path string, content []byte) error {
 	tmpPath := tmp.Name()
 
 	if _, err := tmp.Write(formatted); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("write temp file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("close temp file: %w", err)
 	}
 
 	// Atomic rename.
 	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("rename %s → %s: %w", filepath.Base(tmpPath), filepath.Base(path), err)
 	}
 	return nil
@@ -79,7 +79,7 @@ func isGeneratedFile(path string) bool {
 	if err != nil {
 		return false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	if scanner.Scan() {

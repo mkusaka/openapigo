@@ -13,8 +13,8 @@ type Schema struct {
 	Format string `json:"format,omitempty" yaml:"format,omitempty"`
 
 	// Object properties
-	Properties           map[string]*Schema `json:"properties,omitempty" yaml:"properties,omitempty"`
-	Required             []string           `json:"required,omitempty" yaml:"required,omitempty"`
+	Properties           map[string]*Schema    `json:"properties,omitempty" yaml:"properties,omitempty"`
+	Required             []string              `json:"required,omitempty" yaml:"required,omitempty"`
 	AdditionalProperties *AdditionalProperties `json:"additionalProperties,omitempty" yaml:"additionalProperties,omitempty"`
 
 	// Array items
@@ -52,8 +52,8 @@ type Schema struct {
 	Else *Schema `json:"else,omitempty" yaml:"else,omitempty"`
 
 	// Dependent keywords (OAS 3.1 / JSON Schema 2020-12)
-	DependentRequired map[string][]string  `json:"dependentRequired,omitempty" yaml:"dependentRequired,omitempty"`
-	DependentSchemas  map[string]*Schema   `json:"dependentSchemas,omitempty" yaml:"dependentSchemas,omitempty"`
+	DependentRequired map[string][]string `json:"dependentRequired,omitempty" yaml:"dependentRequired,omitempty"`
+	DependentSchemas  map[string]*Schema  `json:"dependentSchemas,omitempty" yaml:"dependentSchemas,omitempty"`
 
 	// Pattern properties (OAS 3.1 / JSON Schema 2020-12)
 	PatternProperties map[string]*Schema `json:"patternProperties,omitempty" yaml:"patternProperties,omitempty"`
@@ -70,9 +70,9 @@ type Schema struct {
 	Nullable bool `json:"nullable,omitempty" yaml:"nullable,omitempty"`
 
 	// Metadata
-	Title       string `json:"title,omitempty" yaml:"title,omitempty"`
-	Description string `json:"description,omitempty" yaml:"description,omitempty"`
-	Deprecated  bool   `json:"deprecated,omitempty" yaml:"deprecated,omitempty"`
+	Title       string          `json:"title,omitempty" yaml:"title,omitempty"`
+	Description string          `json:"description,omitempty" yaml:"description,omitempty"`
+	Deprecated  bool            `json:"deprecated,omitempty" yaml:"deprecated,omitempty"`
 	Example     json.RawMessage `json:"example,omitempty" yaml:"example,omitempty"`
 
 	// ReadOnly/WriteOnly

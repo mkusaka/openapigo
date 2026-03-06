@@ -598,7 +598,7 @@ type unevalBranch struct {
 
 // unevalBranchSet holds oneOf/anyOf branch info for unevaluated property checking.
 type unevalBranchSet struct {
-	kind     string        // "oneOf" or "anyOf"
+	kind     string // "oneOf" or "anyOf"
 	branches []unevalBranch
 }
 

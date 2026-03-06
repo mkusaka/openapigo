@@ -11,5 +11,5 @@ type JSONCodec interface {
 
 type defaultCodec struct{}
 
-func (defaultCodec) Marshal(v any) ([]byte, error)       { return json.Marshal(v) }
-func (defaultCodec) Unmarshal(data []byte, v any) error   { return json.Unmarshal(data, v) }
+func (defaultCodec) Marshal(v any) ([]byte, error)      { return json.Marshal(v) }
+func (defaultCodec) Unmarshal(data []byte, v any) error { return json.Unmarshal(data, v) }

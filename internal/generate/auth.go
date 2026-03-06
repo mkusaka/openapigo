@@ -20,8 +20,8 @@ func (g *Generator) generateAuth(source string) string {
 	w.WriteString("\n")
 
 	imports := map[string]bool{
-		"net/http":                       true,
-		"github.com/mkusaka/openapigo":   true,
+		"net/http":                     true,
+		"github.com/mkusaka/openapigo": true,
 	}
 
 	var funcDefs strings.Builder

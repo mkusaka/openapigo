@@ -59,7 +59,10 @@ func runGenerate(args []string) {
 		fmt.Fprintln(os.Stderr, "Usage: openapigo generate -i <spec> -o <output> [-package <name>]")
 		fs.PrintDefaults()
 	}
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
 	if cfg.Input == "" || cfg.Output == "" {
 		fs.Usage()
@@ -87,7 +90,7 @@ func runGenerate(args []string) {
 // parseFormatMapping parses "format=import/path.Type,format2=import/path2.Type2".
 func parseFormatMapping(raw string) map[string]string {
 	m := make(map[string]string)
-	for _, pair := range strings.Split(raw, ",") {
+	for pair := range strings.SplitSeq(raw, ",") {
 		pair = strings.TrimSpace(pair)
 		if idx := strings.IndexByte(pair, '='); idx > 0 {
 			m[pair[:idx]] = pair[idx+1:]
@@ -99,7 +102,7 @@ func parseFormatMapping(raw string) map[string]string {
 // parseHeaders parses "Key:Value,Key2:Value2".
 func parseHeaders(raw string) map[string]string {
 	m := make(map[string]string)
-	for _, pair := range strings.Split(raw, ",") {
+	for pair := range strings.SplitSeq(raw, ",") {
 		pair = strings.TrimSpace(pair)
 		if idx := strings.IndexByte(pair, ':'); idx > 0 {
 			m[strings.TrimSpace(pair[:idx])] = strings.TrimSpace(pair[idx+1:])
