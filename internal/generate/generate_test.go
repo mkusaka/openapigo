@@ -353,6 +353,42 @@ func TestConfigFlags(t *testing.T) {
 		}
 	})
 
+	t.Run("deterministic-output", func(t *testing.T) {
+		// Regression test: generation must produce byte-identical output
+		// across repeated runs. This catches nondeterministic map iteration
+		// (e.g. over op.Responses) leaking into inline schema discovery order.
+		specPath := filepath.Join(root, "testdata", "cases", "determinism", "spec.json")
+
+		// Generate once to get the reference output.
+		refDir := t.TempDir()
+		if err := generate.Run(generate.Config{
+			Input:   specPath,
+			Output:  refDir,
+			Package: "generated",
+		}); err != nil {
+			t.Fatalf("generate.Run (reference): %v", err)
+		}
+		refFiles := readGoFiles(t, refDir)
+
+		// Re-generate 20 times and compare.
+		for i := range 20 {
+			dir := t.TempDir()
+			if err := generate.Run(generate.Config{
+				Input:   specPath,
+				Output:  dir,
+				Package: "generated",
+			}); err != nil {
+				t.Fatalf("generate.Run (iteration %d): %v", i, err)
+			}
+			got := readGoFiles(t, dir)
+			for name, ref := range refFiles {
+				if got[name] != ref {
+					t.Fatalf("iteration %d: %s differs from reference output", i, name)
+				}
+			}
+		}
+	})
+
 	t.Run("validate-on-unmarshal-compiles", func(t *testing.T) {
 		outDir := t.TempDir()
 		err := generate.Run(generate.Config{
@@ -382,4 +418,25 @@ func TestConfigFlags(t *testing.T) {
 			t.Fatalf("go build failed:\n%s\n%v", out, err)
 		}
 	})
+}
+
+// readGoFiles reads all .go files from a directory into a map.
+func readGoFiles(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir %s: %v", dir, err)
+	}
+	files := make(map[string]string)
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) != ".go" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+		files[e.Name()] = string(data)
+	}
+	return files
 }

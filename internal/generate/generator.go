@@ -861,14 +861,21 @@ func (g *Generator) emitOperation(w *strings.Builder, imports map[string]bool, p
 
 	// --- Error types ---
 	// Same: discover type names without collecting imports.
-	for code, resp := range op.Responses {
+	// Sort response codes for deterministic inline schema discovery order.
+	var errDiscoverCodes []string
+	for code := range op.Responses {
 		if code == "default" || (len(code) == 3 && code[0] >= '4') {
-			if resp.Response != nil {
-				errSchema := g.responseSchema(resp.Response)
-				if errSchema != nil {
-					errName := opName + codeToName(code) + "Error"
-					_ = g.GoType(errSchema.Resolved(), errName)
-				}
+			errDiscoverCodes = append(errDiscoverCodes, code)
+		}
+	}
+	sort.Strings(errDiscoverCodes)
+	for _, code := range errDiscoverCodes {
+		resp := op.Responses[code]
+		if resp.Response != nil {
+			errSchema := g.responseSchema(resp.Response)
+			if errSchema != nil {
+				errName := opName + codeToName(code) + "Error"
+				_ = g.GoType(errSchema.Resolved(), errName)
 			}
 		}
 	}
