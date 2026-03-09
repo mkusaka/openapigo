@@ -561,11 +561,24 @@ func (g *Generator) emitPatternVars(w *strings.Builder, typeName string, s *spec
 	}
 	// Also emit pattern variables for dependentSchemas properties.
 	// Use parent's field name for consistency with emitPatternCheck.
-	for _, ds := range s.DependentSchemas {
+	// Sort dependentSchemas keys for deterministic output.
+	dsKeys := make([]string, 0, len(s.DependentSchemas))
+	for k := range s.DependentSchemas {
+		dsKeys = append(dsKeys, k)
+	}
+	sortStrings(dsKeys)
+	for _, dsKey := range dsKeys {
+		ds := s.DependentSchemas[dsKey]
 		if ds == nil {
 			continue
 		}
-		for pn, prop := range ds.Properties {
+		dsPropNames := make([]string, 0, len(ds.Properties))
+		for pn := range ds.Properties {
+			dsPropNames = append(dsPropNames, pn)
+		}
+		sortStrings(dsPropNames)
+		for _, pn := range dsPropNames {
+			prop := ds.Properties[pn]
 			if prop == nil {
 				continue
 			}

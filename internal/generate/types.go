@@ -523,7 +523,17 @@ func (g *Generator) mergeConditionalProperties(s *spec.Schema) *spec.Schema {
 		if branch.Ref != "" {
 			resolved = branch.Resolved()
 		}
-		for name, prop := range resolved.Properties {
+		// Sort branch properties for deterministic field order.
+		branchOrder := resolved.PropertyOrder
+		if len(branchOrder) == 0 {
+			branchOrder = make([]string, 0, len(resolved.Properties))
+			for name := range resolved.Properties {
+				branchOrder = append(branchOrder, name)
+			}
+			slices.Sort(branchOrder)
+		}
+		for _, name := range branchOrder {
+			prop := resolved.Properties[name]
 			if _, exists := merged.Properties[name]; !exists {
 				merged.Properties[name] = prop
 				merged.PropertyOrder = append(merged.PropertyOrder, name)
