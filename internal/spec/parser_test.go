@@ -178,3 +178,62 @@ components:
 		t.Errorf("required count = %d", len(pet.Required))
 	}
 }
+
+func TestParse_Discriminator(t *testing.T) {
+	specJSON := `{
+		"openapi": "3.0.3",
+		"info": {"title": "Test", "version": "1.0"},
+		"paths": {},
+		"components": {
+			"schemas": {
+				"Pet": {
+					"oneOf": [
+						{"$ref": "#/components/schemas/Cat"},
+						{"$ref": "#/components/schemas/Dog"}
+					],
+					"discriminator": {
+						"propertyName": "petType",
+						"mapping": {
+							"cat": "#/components/schemas/Cat",
+							"dog": "#/components/schemas/Dog"
+						}
+					}
+				},
+				"Cat": {
+					"type": "object",
+					"properties": {
+						"petType": {"type": "string"},
+						"whiskers": {"type": "boolean"}
+					}
+				},
+				"Dog": {
+					"type": "object",
+					"properties": {
+						"petType": {"type": "string"},
+						"breed": {"type": "string"}
+					}
+				}
+			}
+		}
+	}`
+	doc, err := Parse([]byte(specJSON), ".json")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	pet := doc.Components.Schemas["Pet"]
+	if pet == nil {
+		t.Fatal("missing Pet schema")
+	}
+	if pet.Discriminator == nil {
+		t.Fatal("discriminator not parsed")
+	}
+	if pet.Discriminator.PropertyName != "petType" {
+		t.Errorf("propertyName = %q, want petType", pet.Discriminator.PropertyName)
+	}
+	if len(pet.Discriminator.Mapping) != 2 {
+		t.Errorf("mapping count = %d, want 2", len(pet.Discriminator.Mapping))
+	}
+	if pet.Discriminator.Mapping["cat"] != "#/components/schemas/Cat" {
+		t.Errorf("mapping[cat] = %q", pet.Discriminator.Mapping["cat"])
+	}
+}

@@ -29,6 +29,9 @@ type Schema struct {
 	OneOf []*Schema `json:"oneOf,omitempty" yaml:"oneOf,omitempty"`
 	AnyOf []*Schema `json:"anyOf,omitempty" yaml:"anyOf,omitempty"`
 
+	// Discriminator (OpenAPI)
+	Discriminator *Discriminator `json:"discriminator,omitempty" yaml:"discriminator,omitempty"`
+
 	// Enum/Const/Default
 	Enum    []json.RawMessage `json:"enum,omitempty" yaml:"enum,omitempty"`
 	Const   json.RawMessage   `json:"const,omitempty" yaml:"const,omitempty"`
@@ -105,6 +108,13 @@ func (s *Schema) Resolved() *Schema {
 // IsRef reports whether this schema is a $ref.
 func (s *Schema) IsRef() bool {
 	return s != nil && s.Ref != ""
+}
+
+// Discriminator represents the OpenAPI Discriminator Object.
+// Used to aid deserialization of oneOf/anyOf unions.
+type Discriminator struct {
+	PropertyName string            `json:"propertyName" yaml:"propertyName"`
+	Mapping      map[string]string `json:"mapping,omitempty" yaml:"mapping,omitempty"`
 }
 
 // AdditionalProperties represents the additionalProperties keyword,

@@ -35,6 +35,37 @@ type ErrorHandler struct {
 	Parse func(statusCode int, header http.Header, body []byte) error
 }
 
+// OneOfNoMatchError indicates that no variant matched during oneOf unmarshaling.
+type OneOfNoMatchError struct {
+	Candidates []string
+}
+
+func (e *OneOfNoMatchError) Error() string {
+	return fmt.Sprintf("oneOf: no variant matched among %v", e.Candidates)
+}
+
+// OneOfMultipleMatchError indicates that multiple variants matched during oneOf unmarshaling.
+type OneOfMultipleMatchError struct {
+	Matched []string
+}
+
+func (e *OneOfMultipleMatchError) Error() string {
+	return fmt.Sprintf("oneOf: multiple variants matched: %v", e.Matched)
+}
+
+// AnyOfNoMatchError indicates that no variant matched during anyOf unmarshaling.
+type AnyOfNoMatchError struct {
+	Candidates []string
+}
+
+func (e *AnyOfNoMatchError) Error() string {
+	return fmt.Sprintf("anyOf: no variant matched among %v", e.Candidates)
+}
+
+// ErrAnyOfConflictingKeys is returned by MarshalMerge when anyOf variants
+// have conflicting values for the same JSON key.
+var ErrAnyOfConflictingKeys = fmt.Errorf("anyOf: conflicting key values during merge")
+
 // NoRequest is used as the Req type parameter for endpoints that take no request body or parameters.
 type NoRequest struct{}
 
