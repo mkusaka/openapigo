@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -563,6 +564,10 @@ func (r *resolver) resolveSchemaRef(ref string) (*Schema, error) {
 		// instead of the generic "not a valid JSON Pointer" message.
 		return nil, deepErr
 	}
+	// Fallback: resolve via document JSON Pointer (e.g. #/paths/.../schema).
+	if s, err := resolveDocPointerSchema(r.doc, ref); err == nil {
+		return s, nil
+	}
 	// OAS 3.1: try $anchor lookup for bare fragment refs like "#my-anchor".
 	if r.oas31 && r.anchors != nil {
 		anchor := strings.TrimPrefix(ref, "#")
@@ -899,17 +904,18 @@ func readAllLimited(r io.Reader, limit int64) ([]byte, error) {
 
 func (r *resolver) resolveParameterRef(ref string) (*Parameter, error) {
 	name, err := extractRefName(ref, "parameters")
-	if err != nil {
-		return nil, err
+	if err == nil {
+		if r.doc.Components == nil || r.doc.Components.Parameters == nil {
+			return nil, fmt.Errorf("cannot resolve %q: no components/parameters", ref)
+		}
+		p, ok := r.doc.Components.Parameters[name]
+		if !ok {
+			return nil, fmt.Errorf("cannot resolve %q: parameter %q not found", ref, name)
+		}
+		return p, nil
 	}
-	if r.doc.Components == nil || r.doc.Components.Parameters == nil {
-		return nil, fmt.Errorf("cannot resolve %q: no components/parameters", ref)
-	}
-	p, ok := r.doc.Components.Parameters[name]
-	if !ok {
-		return nil, fmt.Errorf("cannot resolve %q: parameter %q not found", ref, name)
-	}
-	return p, nil
+	// Fallback: resolve via document JSON Pointer (e.g. #/paths/.../parameters/0).
+	return resolveDocPointerParameter(r.doc, ref)
 }
 
 func (r *resolver) resolveRequestBodyRef(ref string) (*RequestBody, error) {
@@ -929,17 +935,18 @@ func (r *resolver) resolveRequestBodyRef(ref string) (*RequestBody, error) {
 
 func (r *resolver) resolveResponseRef(ref string) (*Response, error) {
 	name, err := extractRefName(ref, "responses")
-	if err != nil {
-		return nil, err
+	if err == nil {
+		if r.doc.Components == nil || r.doc.Components.Responses == nil {
+			return nil, fmt.Errorf("cannot resolve %q: no components/responses", ref)
+		}
+		resp, ok := r.doc.Components.Responses[name]
+		if !ok {
+			return nil, fmt.Errorf("cannot resolve %q: response %q not found", ref, name)
+		}
+		return resp, nil
 	}
-	if r.doc.Components == nil || r.doc.Components.Responses == nil {
-		return nil, fmt.Errorf("cannot resolve %q: no components/responses", ref)
-	}
-	resp, ok := r.doc.Components.Responses[name]
-	if !ok {
-		return nil, fmt.Errorf("cannot resolve %q: response %q not found", ref, name)
-	}
-	return resp, nil
+	// Fallback: resolve via document JSON Pointer (e.g. #/paths/.../responses/4XX).
+	return resolveDocPointerResponse(r.doc, ref)
 }
 
 // extractRefName extracts the component name from a $ref like "#/components/{section}/Name".
@@ -961,4 +968,240 @@ func extractRefName(ref, expectedSection string) (string, error) {
 	name := strings.ReplaceAll(parts[2], "~1", "/")
 	name = strings.ReplaceAll(name, "~0", "~")
 	return name, nil
+}
+
+// --- Document-level JSON Pointer resolution for #/paths/... refs ---
+
+// parseDocPointerSegments decodes a fragment ref like "#/paths/~1v1~1auth/post/responses/4XX"
+// into unescaped segments: ["paths", "/v1/auth", "post", "responses", "4XX"].
+func parseDocPointerSegments(ref string) ([]string, error) {
+	if !strings.HasPrefix(ref, "#/") {
+		return nil, fmt.Errorf("not a fragment ref: %q", ref)
+	}
+	raw := ref[2:]
+	// Percent-decode per RFC 6901 §6 (URI fragment representation).
+	if decoded, err := url.PathUnescape(raw); err == nil {
+		raw = decoded
+	}
+	parts := strings.Split(raw, "/")
+	for i, p := range parts {
+		// JSON Pointer escapes: ~1 → /, ~0 → ~ (order matters per RFC 6901).
+		p = strings.ReplaceAll(p, "~1", "/")
+		p = strings.ReplaceAll(p, "~0", "~")
+		parts[i] = p
+	}
+	return parts, nil
+}
+
+// operationByMethod returns the Operation on a PathItem for the given HTTP method.
+func operationByMethod(pi *PathItem, method string) *Operation {
+	switch strings.ToLower(method) {
+	case "get":
+		return pi.Get
+	case "put":
+		return pi.Put
+	case "post":
+		return pi.Post
+	case "delete":
+		return pi.Delete
+	case "patch":
+		return pi.Patch
+	default:
+		return nil
+	}
+}
+
+// walkToOperation walks parsed segments to locate an Operation within the document.
+// It handles direct paths (paths/<key>/<method>) and callback chains
+// (paths/<key>/<method>/callbacks/<name>/<expression>/<method>/...).
+// Returns the operation and the index of the first segment after the method.
+func walkToOperation(doc *Document, segs []string) (*Operation, int, error) {
+	if len(segs) < 3 || segs[0] != "paths" {
+		return nil, 0, fmt.Errorf("expected paths/<key>/<method>, got %d segments", len(segs))
+	}
+	pi, ok := doc.Paths[segs[1]]
+	if !ok {
+		return nil, 0, fmt.Errorf("path %q not found in document", segs[1])
+	}
+	op := operationByMethod(pi, segs[2])
+	if op == nil {
+		return nil, 0, fmt.Errorf("method %q not found on path %q", segs[2], segs[1])
+	}
+	idx := 3
+	// Follow callback chains: callbacks/<name>/<expression>/<method>
+	for idx < len(segs) && segs[idx] == "callbacks" {
+		if idx+3 >= len(segs) {
+			return nil, 0, fmt.Errorf("incomplete callbacks path at segment %d", idx)
+		}
+		cbName := segs[idx+1]
+		cbExpr := segs[idx+2]
+		cbMethod := segs[idx+3]
+		if op.Callbacks == nil {
+			return nil, 0, fmt.Errorf("no callbacks on operation")
+		}
+		cb, ok := op.Callbacks[cbName]
+		if !ok {
+			return nil, 0, fmt.Errorf("callback %q not found", cbName)
+		}
+		cbPI, ok := cb[cbExpr]
+		if !ok {
+			return nil, 0, fmt.Errorf("callback expression %q not found in %q", cbExpr, cbName)
+		}
+		op = operationByMethod(cbPI, cbMethod)
+		if op == nil {
+			return nil, 0, fmt.Errorf("method %q not found on callback %q/%q", cbMethod, cbName, cbExpr)
+		}
+		idx += 4
+	}
+	return op, idx, nil
+}
+
+// resolveDocPointerResponse resolves a document-level $ref like
+// "#/paths/~1v1~1auth/post/responses/4XX" to a *Response.
+func resolveDocPointerResponse(doc *Document, ref string) (*Response, error) {
+	segs, err := parseDocPointerSegments(ref)
+	if err != nil {
+		return nil, err
+	}
+	op, idx, err := walkToOperation(doc, segs)
+	if err != nil {
+		return nil, fmt.Errorf("resolve %q: %w", ref, err)
+	}
+	// Expect: responses/<code>
+	if idx+1 >= len(segs) || segs[idx] != "responses" {
+		return nil, fmt.Errorf("resolve %q: expected responses/<code> after method, got %v", ref, segs[idx:])
+	}
+	code := segs[idx+1]
+	respOrRef, ok := op.Responses[code]
+	if !ok {
+		return nil, fmt.Errorf("resolve %q: response %q not found", ref, code)
+	}
+	if respOrRef.Ref != "" {
+		return nil, fmt.Errorf("resolve %q: target is itself a $ref %q", ref, respOrRef.Ref)
+	}
+	if respOrRef.Response == nil {
+		return nil, fmt.Errorf("resolve %q: response %q is nil", ref, code)
+	}
+	return respOrRef.Response, nil
+}
+
+// resolveDocPointerParameter resolves a document-level $ref like
+// "#/paths/~1v1~1customers/delete/parameters/1" to a *Parameter.
+func resolveDocPointerParameter(doc *Document, ref string) (*Parameter, error) {
+	segs, err := parseDocPointerSegments(ref)
+	if err != nil {
+		return nil, err
+	}
+	op, idx, err := walkToOperation(doc, segs)
+	if err != nil {
+		return nil, fmt.Errorf("resolve %q: %w", ref, err)
+	}
+	// Expect: parameters/<index>
+	if idx+1 >= len(segs) || segs[idx] != "parameters" {
+		return nil, fmt.Errorf("resolve %q: expected parameters/<index> after method, got %v", ref, segs[idx:])
+	}
+	idxStr := segs[idx+1]
+	paramIdx, parseErr := strconv.Atoi(idxStr)
+	if parseErr != nil || paramIdx < 0 {
+		return nil, fmt.Errorf("resolve %q: invalid parameter index %q", ref, idxStr)
+	}
+	if paramIdx >= len(op.Parameters) {
+		return nil, fmt.Errorf("resolve %q: parameter index %d out of range (len=%d)", ref, paramIdx, len(op.Parameters))
+	}
+	p := op.Parameters[paramIdx]
+	if p.Ref != "" {
+		return nil, fmt.Errorf("resolve %q: target is itself a $ref %q", ref, p.Ref)
+	}
+	if p.Parameter == nil {
+		return nil, fmt.Errorf("resolve %q: parameter at index %d is nil", ref, paramIdx)
+	}
+	return p.Parameter, nil
+}
+
+// resolveDocPointerSchema resolves a document-level $ref like
+// "#/paths/.../post/requestBody/content/application~1json/schema" to a *Schema.
+func resolveDocPointerSchema(doc *Document, ref string) (*Schema, error) {
+	segs, err := parseDocPointerSegments(ref)
+	if err != nil {
+		return nil, err
+	}
+	op, idx, err := walkToOperation(doc, segs)
+	if err != nil {
+		return nil, fmt.Errorf("resolve %q: %w", ref, err)
+	}
+	remaining := segs[idx:]
+	// Walk remaining segments to reach a Schema.
+	return walkOperationToSchema(op, remaining, ref)
+}
+
+// walkOperationToSchema walks segments within an Operation to locate a Schema.
+// Supported paths:
+//   - requestBody/content/<mediaType>/schema[/...]
+//   - responses/<code>/content/<mediaType>/schema[/...]
+func walkOperationToSchema(op *Operation, segs []string, ref string) (*Schema, error) {
+	if len(segs) == 0 {
+		return nil, fmt.Errorf("resolve %q: no segments after operation", ref)
+	}
+	switch segs[0] {
+	case "requestBody":
+		if op.RequestBody == nil {
+			return nil, fmt.Errorf("resolve %q: no requestBody", ref)
+		}
+		if op.RequestBody.Ref != "" {
+			return nil, fmt.Errorf("resolve %q: requestBody is a $ref %q", ref, op.RequestBody.Ref)
+		}
+		rb := op.RequestBody.RequestBody
+		if rb == nil {
+			return nil, fmt.Errorf("resolve %q: requestBody is nil", ref)
+		}
+		// Expect: content/<mediaType>/schema
+		if len(segs) < 4 || segs[1] != "content" || segs[3] != "schema" {
+			return nil, fmt.Errorf("resolve %q: expected requestBody/content/<mediaType>/schema", ref)
+		}
+		mt, ok := rb.Content[segs[2]]
+		if !ok {
+			return nil, fmt.Errorf("resolve %q: media type %q not found", ref, segs[2])
+		}
+		if mt.Schema == nil {
+			return nil, fmt.Errorf("resolve %q: schema is nil for media type %q", ref, segs[2])
+		}
+		// If there are deeper segments, walk into the schema.
+		if len(segs) > 4 {
+			return resolveJSONPointerInSchema(mt.Schema, strings.Join(segs[4:], "/"))
+		}
+		return mt.Schema, nil
+	case "responses":
+		if len(segs) < 2 {
+			return nil, fmt.Errorf("resolve %q: expected responses/<code> with content path", ref)
+		}
+		code := segs[1]
+		respOrRef, ok := op.Responses[code]
+		if !ok {
+			return nil, fmt.Errorf("resolve %q: response %q not found", ref, code)
+		}
+		if respOrRef.Ref != "" {
+			return nil, fmt.Errorf("resolve %q: response is a $ref %q", ref, respOrRef.Ref)
+		}
+		resp := respOrRef.Response
+		if resp == nil {
+			return nil, fmt.Errorf("resolve %q: response %q is nil", ref, code)
+		}
+		// Expect: content/<mediaType>/schema
+		if len(segs) < 5 || segs[2] != "content" || segs[4] != "schema" {
+			return nil, fmt.Errorf("resolve %q: expected responses/<code>/content/<mediaType>/schema", ref)
+		}
+		mt, ok := resp.Content[segs[3]]
+		if !ok {
+			return nil, fmt.Errorf("resolve %q: media type %q not found", ref, segs[3])
+		}
+		if mt.Schema == nil {
+			return nil, fmt.Errorf("resolve %q: schema is nil for media type %q", ref, segs[3])
+		}
+		if len(segs) > 5 {
+			return resolveJSONPointerInSchema(mt.Schema, strings.Join(segs[5:], "/"))
+		}
+		return mt.Schema, nil
+	default:
+		return nil, fmt.Errorf("resolve %q: unsupported operation segment %q (expected requestBody or responses)", ref, segs[0])
+	}
 }

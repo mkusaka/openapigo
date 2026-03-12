@@ -63,7 +63,7 @@ Commands:
 
 - Schema-to-Go type mapping (object, array, primitive, enum)
 - `allOf` / `oneOf` / `anyOf` composition (typed union wrappers with strategy-based discrimination)
-- `$ref` resolution (local including deep JSON Pointer, file, and URL)
+- `$ref` resolution (local including deep JSON Pointer and `#/paths/...`, file, and URL)
 - `$id` / `$anchor` resolution with relative URI chain (OAS 3.1, RFC 3986)
 - `if` / `then` / `else` conditional schemas (OAS 3.1)
 - `patternProperties` / `additionalProperties`
@@ -112,7 +112,12 @@ The `discriminator` keyword is parsed but routing is not implemented. `oneOf`/`a
 
 ### Deep local `$ref`
 
-Deep local `$ref` paths (`#/components/schemas/<name>/<deep-path>`) are supported within `components/schemas`. The deep path traverses `properties`, `items`, `additionalProperties`, and `allOf`/`oneOf`/`anyOf` segments. RFC 6901 percent-decoding and tilde escapes (`~0`, `~1`) are handled. Other deep ref targets (e.g., `#/paths/...`) and segments not listed above are not supported.
+Deep local `$ref` paths are supported in two forms:
+
+1. **`#/components/schemas/<name>/<deep-path>`** — traverses `properties`, `items`, `additionalProperties`, and `allOf`/`oneOf`/`anyOf` segments within component schemas.
+2. **`#/paths/<path>/<method>/...`** — resolves responses (`responses/<code>`), parameters (`parameters/<index>`), and schemas (`requestBody/content/<mediaType>/schema`, `responses/<code>/content/<mediaType>/schema`) within path operations, including through `callbacks`. Targets that are themselves `$ref` wrappers are not followed.
+
+RFC 6901 percent-decoding and tilde escapes (`~0`, `~1`) are handled in both forms.
 
 ### `const`
 

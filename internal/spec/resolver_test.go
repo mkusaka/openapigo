@@ -1137,3 +1137,281 @@ func TestResolve_DeepLocalRef_PercentEncoded(t *testing.T) {
 		t.Errorf("resolved type = %q, want boolean", resolved.Type)
 	}
 }
+
+func TestResolve_DocPointerResponse(t *testing.T) {
+	doc := &Document{
+		OpenAPI: "3.0.3",
+		Paths: map[string]*PathItem{
+			"/v1/auth": {
+				Post: &Operation{
+					Responses: map[string]*ResponseOrRef{
+						"4XX": {Response: &Response{Description: "client error"}},
+						"200": {Response: &Response{Description: "ok"}},
+					},
+				},
+			},
+		},
+	}
+	resp, err := resolveDocPointerResponse(doc, "#/paths/~1v1~1auth/post/responses/4XX")
+	if err != nil {
+		t.Fatalf("resolveDocPointerResponse: %v", err)
+	}
+	if resp.Description != "client error" {
+		t.Errorf("description = %q, want %q", resp.Description, "client error")
+	}
+}
+
+func TestResolve_DocPointerResponse_PercentEncoded(t *testing.T) {
+	doc := &Document{
+		OpenAPI: "3.0.3",
+		Paths: map[string]*PathItem{
+			"/v1/transactions/{transactionId}:advice": {
+				Post: &Operation{
+					Responses: map[string]*ResponseOrRef{
+						"200": {Response: &Response{Description: "ok from advice"}},
+					},
+				},
+			},
+		},
+	}
+	// Path key contains {transactionId} → %7BtransactionId%7D and : → %3A in percent-encoding.
+	resp, err := resolveDocPointerResponse(doc, "#/paths/~1v1~1transactions~1%7BtransactionId%7D%3Aadvice/post/responses/200")
+	if err != nil {
+		t.Fatalf("resolveDocPointerResponse: %v", err)
+	}
+	if resp.Description != "ok from advice" {
+		t.Errorf("description = %q, want %q", resp.Description, "ok from advice")
+	}
+}
+
+func TestResolve_DocPointerParameter(t *testing.T) {
+	doc := &Document{
+		OpenAPI: "3.0.3",
+		Paths: map[string]*PathItem{
+			"/v1/items/{id}": {
+				Delete: &Operation{
+					Parameters: []*ParameterOrRef{
+						{Parameter: &Parameter{Name: "id", In: "path"}},
+						{Parameter: &Parameter{Name: "force", In: "query"}},
+					},
+				},
+			},
+		},
+	}
+	p, err := resolveDocPointerParameter(doc, "#/paths/~1v1~1items~1%7Bid%7D/delete/parameters/1")
+	if err != nil {
+		t.Fatalf("resolveDocPointerParameter: %v", err)
+	}
+	if p.Name != "force" {
+		t.Errorf("parameter name = %q, want %q", p.Name, "force")
+	}
+}
+
+func TestResolve_DocPointerSchema_RequestBody(t *testing.T) {
+	doc := &Document{
+		OpenAPI: "3.0.3",
+		Paths: map[string]*PathItem{
+			"/v1/users": {
+				Post: &Operation{
+					RequestBody: &RequestBodyOrRef{
+						RequestBody: &RequestBody{
+							Content: map[string]*MediaType{
+								"application/json": {
+									Schema: &Schema{Type: "object", Properties: map[string]*Schema{
+										"name": {Type: "string"},
+									}},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	s, err := resolveDocPointerSchema(doc, "#/paths/~1v1~1users/post/requestBody/content/application~1json/schema")
+	if err != nil {
+		t.Fatalf("resolveDocPointerSchema: %v", err)
+	}
+	if s.Type != "object" {
+		t.Errorf("schema type = %q, want %q", s.Type, "object")
+	}
+	if _, ok := s.Properties["name"]; !ok {
+		t.Error("expected property 'name' in schema")
+	}
+}
+
+func TestResolve_DocPointerSchema_Callback(t *testing.T) {
+	doc := &Document{
+		OpenAPI: "3.0.3",
+		Paths: map[string]*PathItem{
+			"/v1/links": {
+				Post: &Operation{
+					Callbacks: map[string]Callback{
+						"onData": {
+							"callbackUrl": &PathItem{
+								Post: &Operation{
+									RequestBody: &RequestBodyOrRef{
+										RequestBody: &RequestBody{
+											Content: map[string]*MediaType{
+												"application/json": {
+													Schema: &Schema{Type: "object", Properties: map[string]*Schema{
+														"status": {Type: "string"},
+													}},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	s, err := resolveDocPointerSchema(doc, "#/paths/~1v1~1links/post/callbacks/onData/callbackUrl/post/requestBody/content/application~1json/schema")
+	if err != nil {
+		t.Fatalf("resolveDocPointerSchema: %v", err)
+	}
+	if s.Type != "object" {
+		t.Errorf("schema type = %q, want %q", s.Type, "object")
+	}
+	if _, ok := s.Properties["status"]; !ok {
+		t.Error("expected property 'status' in schema")
+	}
+}
+
+func TestResolve_DocPointerSchema_ResponseContent(t *testing.T) {
+	doc := &Document{
+		OpenAPI: "3.0.3",
+		Paths: map[string]*PathItem{
+			"/v1/auth": {
+				Post: &Operation{
+					Responses: map[string]*ResponseOrRef{
+						"200": {Response: &Response{
+							Description: "ok",
+							Content: map[string]*MediaType{
+								"application/json": {
+									Schema: &Schema{Type: "object", Properties: map[string]*Schema{
+										"token": {Type: "string"},
+									}},
+								},
+							},
+						}},
+					},
+				},
+			},
+		},
+	}
+	s, err := resolveDocPointerSchema(doc, "#/paths/~1v1~1auth/post/responses/200/content/application~1json/schema")
+	if err != nil {
+		t.Fatalf("resolveDocPointerSchema: %v", err)
+	}
+	if s.Type != "object" {
+		t.Errorf("schema type = %q, want %q", s.Type, "object")
+	}
+	if _, ok := s.Properties["token"]; !ok {
+		t.Error("expected property 'token' in schema")
+	}
+}
+
+func TestResolve_DocPointerSchema_CallbackRuntimeExpr(t *testing.T) {
+	// Callback key is a runtime expression containing special characters.
+	doc := &Document{
+		OpenAPI: "3.0.3",
+		Paths: map[string]*PathItem{
+			"/v1/hooks": {
+				Post: &Operation{
+					Callbacks: map[string]Callback{
+						"event": {
+							"{$request.body#/callbackUrl}": &PathItem{
+								Post: &Operation{
+									RequestBody: &RequestBodyOrRef{
+										RequestBody: &RequestBody{
+											Content: map[string]*MediaType{
+												"application/json": {
+													Schema: &Schema{Type: "object", Properties: map[string]*Schema{
+														"event_type": {Type: "string"},
+													}},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	// The expression key {$request.body#/callbackUrl} contains # and / which
+	// need ~1 escaping for / in the JSON Pointer. The # does not need escaping
+	// as it is not a separator in JSON Pointer tokens.
+	// Encoded: {$request.body#~1callbackUrl}
+	s, err := resolveDocPointerSchema(doc,
+		"#/paths/~1v1~1hooks/post/callbacks/event/{$request.body#~1callbackUrl}/post/requestBody/content/application~1json/schema")
+	if err != nil {
+		t.Fatalf("resolveDocPointerSchema: %v", err)
+	}
+	if s.Type != "object" {
+		t.Errorf("schema type = %q, want %q", s.Type, "object")
+	}
+	if _, ok := s.Properties["event_type"]; !ok {
+		t.Error("expected property 'event_type' in schema")
+	}
+}
+
+func TestResolve_DocPointerNotFound(t *testing.T) {
+	doc := &Document{
+		OpenAPI: "3.0.3",
+		Paths:   map[string]*PathItem{},
+	}
+	_, err := resolveDocPointerResponse(doc, "#/paths/~1missing/get/responses/200")
+	if err == nil {
+		t.Fatal("expected error for missing path")
+	}
+}
+
+func TestResolve_DocPointerResponse_Integration(t *testing.T) {
+	// Test full Resolve() with a response $ref pointing to #/paths/...
+	doc := &Document{
+		OpenAPI: "3.0.3",
+		Paths: map[string]*PathItem{
+			"/v1/auth": {
+				Post: &Operation{
+					Responses: map[string]*ResponseOrRef{
+						"4XX": {Response: &Response{
+							Description: "client error",
+							Content: map[string]*MediaType{
+								"application/json": {
+									Schema: &Schema{Type: "object", Properties: map[string]*Schema{
+										"code": {Type: "string"},
+									}},
+								},
+							},
+						}},
+					},
+				},
+			},
+			"/v1/users": {
+				Get: &Operation{
+					Responses: map[string]*ResponseOrRef{
+						"4XX": {Ref: "#/paths/~1v1~1auth/post/responses/4XX"},
+						"200": {Response: &Response{Description: "ok"}},
+					},
+				},
+			},
+		},
+	}
+	if err := Resolve(doc); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	resp := doc.Paths["/v1/users"].Get.Responses["4XX"]
+	if resp.Response == nil {
+		t.Fatal("expected resolved response")
+	}
+	if resp.Response.Description != "client error" {
+		t.Errorf("description = %q, want %q", resp.Response.Description, "client error")
+	}
+}

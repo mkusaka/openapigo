@@ -92,9 +92,13 @@ type Operation struct {
 	Parameters  []*ParameterOrRef         `json:"parameters,omitempty" yaml:"parameters,omitempty"`
 	RequestBody *RequestBodyOrRef         `json:"requestBody,omitempty" yaml:"requestBody,omitempty"`
 	Responses   map[string]*ResponseOrRef `json:"responses,omitempty" yaml:"responses,omitempty"`
+	Callbacks   map[string]Callback       `json:"callbacks,omitempty" yaml:"callbacks,omitempty"`
 	Security    []SecurityRequirement     `json:"security,omitempty" yaml:"security,omitempty"`
 	Deprecated  bool                      `json:"deprecated,omitempty" yaml:"deprecated,omitempty"`
 }
+
+// Callback maps runtime expressions to path items (OAS 3.0 Callback Object).
+type Callback map[string]*PathItem
 
 // ParameterOrRef is either a Parameter or a $ref.
 type ParameterOrRef struct {
