@@ -62,8 +62,8 @@ Commands:
 ### OpenAPI 3.0 / 3.1
 
 - Schema-to-Go type mapping (object, array, primitive, enum)
-- `allOf` / `oneOf` / `anyOf` composition
-- `$ref` resolution (local, file, and URL)
+- `allOf` / `oneOf` / `anyOf` composition (typed union wrappers with strategy-based discrimination)
+- `$ref` resolution (local including deep JSON Pointer, file, and URL)
 - `$id` / `$anchor` resolution with relative URI chain (OAS 3.1, RFC 3986)
 - `if` / `then` / `else` conditional schemas (OAS 3.1)
 - `patternProperties` / `additionalProperties`
@@ -102,9 +102,17 @@ Because `contains` is not evaluated at codegen time, `unevaluatedItems` validati
 
 For `oneOf`/`anyOf` with `unevaluatedProperties`, the generator uses a heuristic (required-key presence) to determine which branch matched at runtime. This is a static approximation — full runtime evaluation of each subschema is not performed. In rare cases where branches differ only by non-required properties, the heuristic may select the wrong branch.
 
+### `oneOf`/`anyOf` union wrappers
+
+Multi-branch `oneOf`/`anyOf` **named component schemas** generate typed wrapper structs with `MarshalJSON`/`UnmarshalJSON` when all branches are named `$ref` schemas and a reliable discrimination strategy exists (required field set difference, unique required property, or JSON type difference). Single-branch `oneOf`/`anyOf` collapses to the branch type directly. Inline `oneOf`/`anyOf` (not a named component schema), unions with inline branches, no reliable strategy, or a `discriminator` keyword fall back to `type X = any`.
+
 ### `discriminator`
 
-The `discriminator` keyword is not supported. `oneOf`/`anyOf` schemas generate a union type (`any`) without discriminator-based type narrowing.
+The `discriminator` keyword is parsed but routing is not implemented. `oneOf`/`anyOf` schemas with `discriminator` generate `type X = any` to prevent silently incorrect code. Discriminator-based type narrowing will be added in a future release.
+
+### Deep local `$ref`
+
+Deep local `$ref` paths (`#/components/schemas/<name>/<deep-path>`) are supported within `components/schemas`. The deep path traverses `properties`, `items`, `additionalProperties`, and `allOf`/`oneOf`/`anyOf` segments. RFC 6901 percent-decoding and tilde escapes (`~0`, `~1`) are handled. Other deep ref targets (e.g., `#/paths/...`) and segments not listed above are not supported.
 
 ### `const`
 
