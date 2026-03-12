@@ -1,0 +1,108 @@
+{
+  "openapi": "3.0.3",
+  "info": { "title": "OneOfUnionTest", "version": "1.0" },
+  "paths": {
+    "/payments": {
+      "get": {
+        "operationId": "listPayments",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Payment" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CreditCard": {
+        "type": "object",
+        "required": ["card_number", "cvv"],
+        "properties": {
+          "card_number": { "type": "string" },
+          "cvv": { "type": "string" },
+          "exp_month": { "type": "integer" },
+          "exp_year": { "type": "integer" }
+        }
+      },
+      "BankTransfer": {
+        "type": "object",
+        "required": ["account_number", "routing_number"],
+        "properties": {
+          "account_number": { "type": "string" },
+          "routing_number": { "type": "string" }
+        }
+      },
+      "Payment": {
+        "type": "object",
+        "required": ["id", "amount"],
+        "properties": {
+          "id": { "type": "string" },
+          "amount": { "type": "integer" },
+          "method": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/CreditCard" }
+            ]
+          },
+          "note": {
+            "anyOf": [
+              { "type": "string" }
+            ]
+          }
+        }
+      },
+      "SingleRefWrapper": {
+        "oneOf": [
+          { "$ref": "#/components/schemas/CreditCard" }
+        ]
+      },
+      "SingleInlineWrapper": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "code": { "type": "string" },
+              "label": { "type": "string" }
+            }
+          }
+        ]
+      },
+      "SinglePrimitiveWrapper": {
+        "oneOf": [
+          { "type": "string" }
+        ]
+      },
+      "MultiUnion": {
+        "oneOf": [
+          { "$ref": "#/components/schemas/CreditCard" },
+          { "$ref": "#/components/schemas/BankTransfer" }
+        ]
+      },
+      "MixedUnion": {
+        "oneOf": [
+          { "$ref": "#/components/schemas/CreditCard" },
+          {
+            "type": "object",
+            "properties": {
+              "wallet_id": { "type": "string" }
+            }
+          }
+        ]
+      },
+      "FlexValue": {
+        "anyOf": [
+          { "type": "string" },
+          { "type": "integer" }
+        ]
+      }
+    }
+  }
+}

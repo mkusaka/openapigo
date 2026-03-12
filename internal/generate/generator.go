@@ -420,6 +420,29 @@ func (g *Generator) emitSchemaType(w *strings.Builder, goName string, s *spec.Sc
 			g.emitOneOfAnyOfUnevaluatedType(w, goName, s)
 			return
 		}
+
+		// Single-branch oneOf/anyOf: collapse to the branch type directly.
+		branches := s.OneOf
+		if len(branches) == 0 {
+			branches = s.AnyOf
+		}
+		if len(branches) == 1 {
+			branch := branches[0].Resolved()
+			// Guard against self-referencing oneOf/anyOf (type Foo = Foo).
+			if branch != s {
+				// If the branch is a named schema, emit a type alias.
+				if refName, ok := g.schemaNames[branch]; ok && refName != goName {
+					fmt.Fprintf(w, "// %s is a type alias (single-branch oneOf/anyOf).\ntype %s = %s\n\n", goName, goName, refName)
+					return
+				}
+				// Unnamed inline schema: emit directly under this name.
+				if _, isNamed := g.schemaNames[branch]; !isNamed {
+					g.emitSchemaType(w, goName, branch)
+					return
+				}
+			}
+		}
+
 		fmt.Fprintf(w, "// %s is a union type (oneOf/anyOf).\ntype %s = any\n\n", goName, goName)
 		return
 	}

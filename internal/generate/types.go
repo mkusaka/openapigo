@@ -96,6 +96,14 @@ func (g *Generator) goTypeInner(s *spec.Schema, name string) string {
 		return g.allOfType(s, name)
 	}
 	if len(s.OneOf) > 0 || len(s.AnyOf) > 0 {
+		branches := s.OneOf
+		if len(branches) == 0 {
+			branches = s.AnyOf
+		}
+		// Single-branch oneOf/anyOf: collapse to the branch type directly.
+		if len(branches) == 1 {
+			return g.GoType(branches[0], name)
+		}
 		return "any"
 	}
 

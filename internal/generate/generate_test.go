@@ -44,6 +44,7 @@ func TestGenerateAndCompile(t *testing.T) {
 		{"conditional", filepath.Join(root, "testdata", "cases", "conditional", "spec.json"), false},
 		{"pattern-props", filepath.Join(root, "testdata", "cases", "pattern-props", "spec.json"), false},
 		{"unevaluated", filepath.Join(root, "testdata", "cases", "unevaluated", "spec.json"), false},
+		{"oneof-union", filepath.Join(root, "testdata", "cases", "oneof-union", "spec.json"), false},
 		{"github-api-subset", filepath.Join(root, "testdata", "realworld", "github-api-subset.json"), false},
 		{"stripe-api-subset", filepath.Join(root, "testdata", "realworld", "stripe-api-subset.json"), false},
 	}
@@ -153,6 +154,12 @@ func TestGenerateGolden(t *testing.T) {
 			"unevaluated",
 			filepath.Join(root, "testdata", "cases", "unevaluated", "spec.json"),
 			filepath.Join(root, "testdata", "cases", "unevaluated", "expected"),
+			false,
+		},
+		{
+			"oneof-union",
+			filepath.Join(root, "testdata", "cases", "oneof-union", "spec.json"),
+			filepath.Join(root, "testdata", "cases", "oneof-union", "expected"),
 			false,
 		},
 	}
