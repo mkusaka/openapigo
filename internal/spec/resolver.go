@@ -555,6 +555,14 @@ func (r *resolver) resolveSchemaRef(ref string) (*Schema, error) {
 		}
 		return s, nil
 	}
+	// Try deep local ref (e.g. "#/components/schemas/Foo/properties/bar").
+	if s, deepErr := resolveDeepSchemaFragment(r.doc, ref); deepErr == nil {
+		return s, nil
+	} else if strings.HasPrefix(ref, "#/components/schemas/") {
+		// The ref looks like a deep components/schemas ref — return the specific error
+		// instead of the generic "not a valid JSON Pointer" message.
+		return nil, deepErr
+	}
 	// OAS 3.1: try $anchor lookup for bare fragment refs like "#my-anchor".
 	if r.oas31 && r.anchors != nil {
 		anchor := strings.TrimPrefix(ref, "#")
@@ -673,20 +681,64 @@ func splitRef(ref string) (string, string) {
 	return ref, ""
 }
 
+// resolveDeepSchemaFragment resolves a deep JSON Pointer fragment like
+// "#/components/schemas/Foo/properties/bar" within a document.
+// Supports percent-decoding per RFC 6901 §6.
+//
+// This is a targeted fix for components/schemas deep refs. Non-OAS external
+// schema documents (e.g. #/Pet) require a document-level JSON Pointer resolver
+// which is out of scope (see ADR-020).
+func resolveDeepSchemaFragment(doc *Document, fragment string) (*Schema, error) {
+	if !strings.HasPrefix(fragment, "#/") {
+		return nil, fmt.Errorf("not a JSON Pointer fragment: %q", fragment)
+	}
+	// Percent-decode per RFC 6901 §6 (URI fragment representation).
+	decoded, err := url.PathUnescape(fragment[2:])
+	if err != nil {
+		decoded = fragment[2:]
+	}
+	segments := strings.Split(decoded, "/")
+	if len(segments) < 3 || segments[0] != "components" || segments[1] != "schemas" {
+		return nil, fmt.Errorf("not a components/schemas ref: %q", fragment)
+	}
+	// Unescape JSON Pointer encoding for schema name: ~1 → /, ~0 → ~
+	baseName := strings.ReplaceAll(segments[2], "~1", "/")
+	baseName = strings.ReplaceAll(baseName, "~0", "~")
+	if doc.Components == nil || doc.Components.Schemas == nil {
+		return nil, fmt.Errorf("no components/schemas in document for %q", fragment)
+	}
+	base, ok := doc.Components.Schemas[baseName]
+	if !ok {
+		return nil, fmt.Errorf("schema %q not found for %q", baseName, fragment)
+	}
+	if len(segments) == 3 {
+		return base, nil
+	}
+	// Remaining segments form a deep path within the schema.
+	deepPath := strings.Join(segments[3:], "/")
+	return resolveJSONPointerInSchema(base, deepPath)
+}
+
 // resolveFragmentSchema resolves a #fragment within a document.
 func resolveFragmentSchema(doc *Document, fragment, fullRef string) (*Schema, error) {
 	name, err := extractRefName(fragment, "schemas")
-	if err != nil {
-		return nil, fmt.Errorf("resolve fragment in %q: %w", fullRef, err)
+	if err == nil {
+		if doc.Components == nil || doc.Components.Schemas == nil {
+			return nil, fmt.Errorf("cannot resolve %q: external doc has no components/schemas", fullRef)
+		}
+		s, ok := doc.Components.Schemas[name]
+		if !ok {
+			return nil, fmt.Errorf("cannot resolve %q: schema %q not found in external doc", fullRef, name)
+		}
+		return s, nil
 	}
-	if doc.Components == nil || doc.Components.Schemas == nil {
-		return nil, fmt.Errorf("cannot resolve %q: external doc has no components/schemas", fullRef)
+	// Try deep schema fragment (e.g. "#/components/schemas/Foo/properties/bar").
+	if s, deepErr := resolveDeepSchemaFragment(doc, fragment); deepErr == nil {
+		return s, nil
+	} else if strings.HasPrefix(fragment, "#/components/schemas/") {
+		return nil, fmt.Errorf("resolve fragment in %q: %w", fullRef, deepErr)
 	}
-	s, ok := doc.Components.Schemas[name]
-	if !ok {
-		return nil, fmt.Errorf("cannot resolve %q: schema %q not found in external doc", fullRef, name)
-	}
-	return s, nil
+	return nil, fmt.Errorf("resolve fragment in %q: %w", fullRef, err)
 }
 
 // loadExternalDoc loads and caches an external document.
@@ -891,12 +943,17 @@ func (r *resolver) resolveResponseRef(ref string) (*Response, error) {
 }
 
 // extractRefName extracts the component name from a $ref like "#/components/{section}/Name".
-// JSON Pointer escapes (~0 for ~, ~1 for /) are decoded.
+// Percent-encoding (RFC 6901 §6) and JSON Pointer escapes (~0 for ~, ~1 for /) are decoded.
 func extractRefName(ref, expectedSection string) (string, error) {
 	if !strings.HasPrefix(ref, "#/") {
 		return "", fmt.Errorf("non-fragment $ref %q: expected #/components/%s/<name>", ref, expectedSection)
 	}
-	parts := strings.Split(ref[2:], "/")
+	// Percent-decode per RFC 6901 §6 (URI fragment representation).
+	raw := ref[2:]
+	if decoded, err := url.PathUnescape(raw); err == nil {
+		raw = decoded
+	}
+	parts := strings.Split(raw, "/")
 	if len(parts) != 3 || parts[0] != "components" || parts[1] != expectedSection {
 		return "", fmt.Errorf("invalid $ref %q: expected #/components/%s/<name>", ref, expectedSection)
 	}

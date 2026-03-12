@@ -931,3 +931,209 @@ func TestResolveWithExternal_HTTPBlockedByDefault(t *testing.T) {
 		t.Errorf("expected 'HTTP not allowed' error, got: %v", err)
 	}
 }
+
+func TestResolve_DeepLocalRef(t *testing.T) {
+	doc := &Document{
+		OpenAPI: "3.0.3",
+		Components: &Components{
+			Schemas: map[string]*Schema{
+				"Transaction": {
+					Type: "object",
+					Properties: map[string]*Schema{
+						"amount":   {Type: "number", Format: "double"},
+						"currency": {Type: "string"},
+					},
+				},
+				"Payment": {
+					Type: "object",
+					Properties: map[string]*Schema{
+						"txAmount": {Ref: "#/components/schemas/Transaction/properties/amount"},
+					},
+				},
+			},
+		},
+	}
+
+	if err := Resolve(doc); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	resolved := doc.Components.Schemas["Payment"].Properties["txAmount"].Resolved()
+	if resolved.Type != "number" {
+		t.Errorf("resolved type = %q, want number", resolved.Type)
+	}
+	if resolved.Format != "double" {
+		t.Errorf("resolved format = %q, want double", resolved.Format)
+	}
+}
+
+func TestResolve_DeepLocalRef_Items(t *testing.T) {
+	doc := &Document{
+		OpenAPI: "3.0.3",
+		Components: &Components{
+			Schemas: map[string]*Schema{
+				"Base": {
+					Type: "object",
+					Properties: map[string]*Schema{
+						"tags": {
+							Type:  "array",
+							Items: &Schema{Type: "string"},
+						},
+					},
+				},
+				"Consumer": {
+					Type: "object",
+					Properties: map[string]*Schema{
+						"tag": {Ref: "#/components/schemas/Base/properties/tags/items"},
+					},
+				},
+			},
+		},
+	}
+
+	if err := Resolve(doc); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	resolved := doc.Components.Schemas["Consumer"].Properties["tag"].Resolved()
+	if resolved.Type != "string" {
+		t.Errorf("resolved type = %q, want string", resolved.Type)
+	}
+}
+
+func TestResolve_DeepLocalRef_AllOf(t *testing.T) {
+	doc := &Document{
+		OpenAPI: "3.0.3",
+		Components: &Components{
+			Schemas: map[string]*Schema{
+				"Composed": {
+					AllOf: []*Schema{
+						{Type: "object", Properties: map[string]*Schema{"a": {Type: "integer"}}},
+						{Type: "object", Properties: map[string]*Schema{"b": {Type: "string"}}},
+					},
+				},
+				"Ref": {
+					Type: "object",
+					Properties: map[string]*Schema{
+						"x": {Ref: "#/components/schemas/Composed/allOf/0"},
+					},
+				},
+			},
+		},
+	}
+
+	if err := Resolve(doc); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	resolved := doc.Components.Schemas["Ref"].Properties["x"].Resolved()
+	if resolved.Type != "object" {
+		t.Errorf("resolved type = %q, want object", resolved.Type)
+	}
+	if _, ok := resolved.Properties["a"]; !ok {
+		t.Error("resolved schema missing 'a' property")
+	}
+}
+
+func TestResolve_DeepLocalRef_NotFound(t *testing.T) {
+	doc := &Document{
+		OpenAPI: "3.0.3",
+		Components: &Components{
+			Schemas: map[string]*Schema{
+				"Base": {
+					Type:       "object",
+					Properties: map[string]*Schema{"name": {Type: "string"}},
+				},
+				"Bad": {
+					Type: "object",
+					Properties: map[string]*Schema{
+						"x": {Ref: "#/components/schemas/Base/properties/nonexistent"},
+					},
+				},
+			},
+		},
+	}
+
+	err := Resolve(doc)
+	if err == nil {
+		t.Fatal("expected error for nonexistent deep ref")
+	}
+	if !strings.Contains(err.Error(), "nonexistent") {
+		t.Errorf("error should mention 'nonexistent', got: %v", err)
+	}
+}
+
+func TestResolve_DeepLocalRef_TildeEscape(t *testing.T) {
+	// Property name containing "/" → must be escaped as ~1 in JSON Pointer.
+	doc := &Document{
+		OpenAPI: "3.0.3",
+		Components: &Components{
+			Schemas: map[string]*Schema{
+				"Base": {
+					Type: "object",
+					Properties: map[string]*Schema{
+						"a/b": {Type: "integer"},
+						"c~d": {Type: "string"},
+					},
+				},
+				"Ref1": {
+					Type: "object",
+					Properties: map[string]*Schema{
+						"x": {Ref: "#/components/schemas/Base/properties/a~1b"},
+					},
+				},
+				"Ref2": {
+					Type: "object",
+					Properties: map[string]*Schema{
+						"y": {Ref: "#/components/schemas/Base/properties/c~0d"},
+					},
+				},
+			},
+		},
+	}
+
+	if err := Resolve(doc); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	r1 := doc.Components.Schemas["Ref1"].Properties["x"].Resolved()
+	if r1.Type != "integer" {
+		t.Errorf("resolved a/b type = %q, want integer", r1.Type)
+	}
+
+	r2 := doc.Components.Schemas["Ref2"].Properties["y"].Resolved()
+	if r2.Type != "string" {
+		t.Errorf("resolved c~d type = %q, want string", r2.Type)
+	}
+}
+
+func TestResolve_DeepLocalRef_PercentEncoded(t *testing.T) {
+	doc := &Document{
+		OpenAPI: "3.0.3",
+		Components: &Components{
+			Schemas: map[string]*Schema{
+				"Base": {
+					Type: "object",
+					Properties: map[string]*Schema{
+						"my field": {Type: "boolean"},
+					},
+				},
+				"Consumer": {
+					Type: "object",
+					Properties: map[string]*Schema{
+						"val": {Ref: "#/components/schemas/Base/properties/my%20field"},
+					},
+				},
+			},
+		},
+	}
+
+	if err := Resolve(doc); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	resolved := doc.Components.Schemas["Consumer"].Properties["val"].Resolved()
+	if resolved.Type != "boolean" {
+		t.Errorf("resolved type = %q, want boolean", resolved.Type)
+	}
+}
