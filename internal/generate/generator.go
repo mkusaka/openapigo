@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -443,6 +444,18 @@ func (g *Generator) emitSchemaType(w *strings.Builder, goName string, s *spec.Sc
 			}
 		}
 
+		// Multi-branch: attempt typed union wrapper generation.
+		if len(branches) >= 2 {
+			if refs, ok := g.allBranchesAreNamedRefs(branches); ok {
+				strategy := selectUnionStrategy(s, refs)
+				if strategy != unionStrategyNone {
+					isOneOf := len(s.OneOf) > 0
+					g.emitUnionWrapperType(w, goName, refs, strategy, isOneOf)
+					return
+				}
+			}
+		}
+
 		fmt.Fprintf(w, "// %s is a union type (oneOf/anyOf).\ntype %s = any\n\n", goName, goName)
 		return
 	}
@@ -595,6 +608,250 @@ func (g *Generator) emitAllOfType(w *strings.Builder, goName string, s *spec.Sch
 			fmt.Fprintf(w, "// %s is a type alias.\ntype %s = %s\n\n", goName, goName, goType)
 		}
 	}
+}
+
+// emitUnionWrapperType generates a typed union wrapper struct with MarshalJSON
+// and UnmarshalJSON methods for a multi-branch oneOf/anyOf union (ADR-002/003).
+func (g *Generator) emitUnionWrapperType(w *strings.Builder, goName string, refs []namedRef, strategy unionStrategy, isOneOf bool) {
+	// Register required imports for generated union code.
+	g.imports["encoding/json"] = true
+	g.imports["fmt"] = true
+	g.imports["github.com/mkusaka/openapigo"] = true
+	if strategy == unionStrategyJSONType {
+		g.imports["bytes"] = true
+	}
+
+	kind := "oneOf"
+	if !isOneOf {
+		kind = "anyOf"
+	}
+
+	// Wrapper struct with pointer fields (json:"-" to avoid default marshaling).
+	fmt.Fprintf(w, "// %s is a %s union type.\ntype %s struct {\n", goName, kind, goName)
+	for _, r := range refs {
+		fmt.Fprintf(w, "\t%s *%s `json:\"-\"`\n", r.goName, r.goName)
+	}
+	fmt.Fprintf(w, "}\n\n")
+
+	// MarshalJSON
+	g.emitUnionMarshalJSON(w, goName, refs, isOneOf)
+
+	// UnmarshalJSON
+	g.emitUnionUnmarshalJSON(w, goName, refs, strategy, isOneOf)
+}
+
+// emitUnionMarshalJSON generates MarshalJSON for a union wrapper.
+func (g *Generator) emitUnionMarshalJSON(w *strings.Builder, goName string, refs []namedRef, isOneOf bool) {
+	fmt.Fprintf(w, "// MarshalJSON implements json.Marshaler for %s.\n", goName)
+	fmt.Fprintf(w, "func (v %s) MarshalJSON() ([]byte, error) {\n", goName)
+
+	if isOneOf {
+		// oneOf: exactly one must be non-nil.
+		fmt.Fprintf(w, "\tvar count int\n")
+		for _, r := range refs {
+			fmt.Fprintf(w, "\tif v.%s != nil { count++ }\n", r.goName)
+		}
+		fmt.Fprintf(w, "\tif count > 1 {\n")
+		fmt.Fprintf(w, "\t\treturn nil, fmt.Errorf(\"%s: multiple variants set (%%d); exactly one must be non-nil\", count)\n", goName)
+		fmt.Fprintf(w, "\t}\n")
+		for _, r := range refs {
+			fmt.Fprintf(w, "\tif v.%s != nil {\n\t\treturn json.Marshal(v.%s)\n\t}\n", r.goName, r.goName)
+		}
+		fmt.Fprintf(w, "\treturn nil, fmt.Errorf(\"%s: no variant set; exactly one must be non-nil\")\n", goName)
+	} else {
+		// anyOf: at least one must be non-nil.
+		// Multiple non-nil → merge.
+		fmt.Fprintf(w, "\tvar nonNil []any\n")
+		for _, r := range refs {
+			fmt.Fprintf(w, "\tif v.%s != nil { nonNil = append(nonNil, v.%s) }\n", r.goName, r.goName)
+		}
+		fmt.Fprintf(w, "\tif len(nonNil) == 0 {\n")
+		fmt.Fprintf(w, "\t\treturn nil, fmt.Errorf(\"%s: no variant set; at least one must be non-nil\")\n", goName)
+		fmt.Fprintf(w, "\t}\n")
+		fmt.Fprintf(w, "\tif len(nonNil) == 1 {\n")
+		fmt.Fprintf(w, "\t\treturn json.Marshal(nonNil[0])\n")
+		fmt.Fprintf(w, "\t}\n")
+		fmt.Fprintf(w, "\treturn openapigo.MarshalMerge(nonNil...)\n")
+	}
+	fmt.Fprintf(w, "}\n\n")
+}
+
+// emitUnionUnmarshalJSON generates UnmarshalJSON for a union wrapper based on strategy.
+func (g *Generator) emitUnionUnmarshalJSON(w *strings.Builder, goName string, refs []namedRef, strategy unionStrategy, isOneOf bool) {
+	fmt.Fprintf(w, "// UnmarshalJSON implements json.Unmarshaler for %s.\n", goName)
+	fmt.Fprintf(w, "func (v *%s) UnmarshalJSON(data []byte) error {\n", goName)
+
+	switch strategy {
+	case unionStrategyJSONType:
+		g.emitJSONTypeUnmarshal(w, goName, refs, isOneOf)
+	case unionStrategyRequiredFieldDiff:
+		g.emitRequiredFieldDiffUnmarshal(w, goName, refs, isOneOf)
+	case unionStrategyUniqueRequired:
+		g.emitUniqueRequiredUnmarshal(w, goName, refs, isOneOf)
+	}
+
+	fmt.Fprintf(w, "}\n\n")
+}
+
+// emitJSONTypeUnmarshal generates unmarshal logic based on JSON value type.
+func (g *Generator) emitJSONTypeUnmarshal(w *strings.Builder, goName string, refs []namedRef, isOneOf bool) {
+	fmt.Fprintf(w, "\ttrimmed := bytes.TrimLeft(data, \" \\t\\r\\n\")\n")
+	fmt.Fprintf(w, "\tif len(trimmed) == 0 {\n")
+	candidates := make([]string, 0, len(refs))
+	for _, r := range refs {
+		candidates = append(candidates, r.goName)
+	}
+	if isOneOf {
+		fmt.Fprintf(w, "\t\treturn &openapigo.OneOfNoMatchError{Candidates: %s}\n", formatStringSlice(candidates))
+	} else {
+		fmt.Fprintf(w, "\t\treturn &openapigo.AnyOfNoMatchError{Candidates: %s}\n", formatStringSlice(candidates))
+	}
+	fmt.Fprintf(w, "\t}\n")
+
+	// Group refs by JSON value prefix character(s).
+	// object → '{', array → '[', string → '"'
+	// boolean → 't' and 'f', number/integer → digits and '-'
+	type prefixGroup struct {
+		cases string // case characters for switch
+		ref   namedRef
+	}
+	var groups []prefixGroup
+
+	for _, r := range refs {
+		switch r.schema.Type {
+		case "object":
+			groups = append(groups, prefixGroup{cases: "'{'", ref: r})
+		case "array":
+			groups = append(groups, prefixGroup{cases: "'['", ref: r})
+		case "string":
+			groups = append(groups, prefixGroup{cases: "'\"'", ref: r})
+		case "boolean":
+			groups = append(groups, prefixGroup{cases: "'t', 'f'", ref: r})
+		case "integer", "number":
+			groups = append(groups, prefixGroup{cases: "'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '-'", ref: r})
+		}
+	}
+
+	// Sort for deterministic output.
+	slices.SortFunc(groups, func(a, b prefixGroup) int {
+		return strings.Compare(a.cases, b.cases)
+	})
+
+	fmt.Fprintf(w, "\tswitch trimmed[0] {\n")
+	for _, g := range groups {
+		fmt.Fprintf(w, "\tcase %s:\n", g.cases)
+		fmt.Fprintf(w, "\t\tv.%s = new(%s)\n", g.ref.goName, g.ref.goName)
+		fmt.Fprintf(w, "\t\treturn json.Unmarshal(data, v.%s)\n", g.ref.goName)
+	}
+
+	fmt.Fprintf(w, "\t}\n")
+	if isOneOf {
+		fmt.Fprintf(w, "\treturn &openapigo.OneOfNoMatchError{Candidates: %s}\n", formatStringSlice(candidates))
+	} else {
+		fmt.Fprintf(w, "\treturn &openapigo.AnyOfNoMatchError{Candidates: %s}\n", formatStringSlice(candidates))
+	}
+}
+
+// emitRequiredFieldDiffUnmarshal generates unmarshal logic based on required field sets.
+func (g *Generator) emitRequiredFieldDiffUnmarshal(w *strings.Builder, goName string, refs []namedRef, isOneOf bool) {
+	candidates := make([]string, 0, len(refs))
+	for _, r := range refs {
+		candidates = append(candidates, r.goName)
+	}
+
+	fmt.Fprintf(w, "\tfields, err := openapigo.ExtractFieldKeys(data)\n")
+	fmt.Fprintf(w, "\tif err != nil {\n\t\treturn err\n\t}\n")
+	fmt.Fprintf(w, "\tvar matched int\n")
+	fmt.Fprintf(w, "\tvar matchedNames []string\n")
+
+	for _, r := range refs {
+		sorted := make([]string, len(r.schema.Required))
+		copy(sorted, r.schema.Required)
+		slices.Sort(sorted)
+
+		fmt.Fprintf(w, "\t// Check %s required fields: %v\n", r.goName, sorted)
+		fmt.Fprintf(w, "\tif ")
+		for i, req := range sorted {
+			if i > 0 {
+				fmt.Fprintf(w, " && ")
+			}
+			fmt.Fprintf(w, "func() bool { _, ok := fields[%q]; return ok }()", req)
+		}
+		fmt.Fprintf(w, " {\n")
+		fmt.Fprintf(w, "\t\tv.%s = new(%s)\n", r.goName, r.goName)
+		fmt.Fprintf(w, "\t\tif err := json.Unmarshal(data, v.%s); err != nil {\n", r.goName)
+		fmt.Fprintf(w, "\t\t\tv.%s = nil\n", r.goName)
+		fmt.Fprintf(w, "\t\t} else {\n")
+		fmt.Fprintf(w, "\t\t\tmatched++\n")
+		fmt.Fprintf(w, "\t\t\tmatchedNames = append(matchedNames, %q)\n", r.goName)
+		fmt.Fprintf(w, "\t\t}\n")
+		fmt.Fprintf(w, "\t}\n")
+	}
+
+	g.emitUnionMatchValidation(w, goName, candidates, isOneOf)
+}
+
+// emitUniqueRequiredUnmarshal generates unmarshal logic based on unique required properties.
+func (g *Generator) emitUniqueRequiredUnmarshal(w *strings.Builder, goName string, refs []namedRef, isOneOf bool) {
+	candidates := make([]string, 0, len(refs))
+	for _, r := range refs {
+		candidates = append(candidates, r.goName)
+	}
+	uniqueProps := uniqueRequiredProps(refs)
+
+	fmt.Fprintf(w, "\tfields, err := openapigo.ExtractFieldKeys(data)\n")
+	fmt.Fprintf(w, "\tif err != nil {\n\t\treturn err\n\t}\n")
+	fmt.Fprintf(w, "\tvar matched int\n")
+	fmt.Fprintf(w, "\tvar matchedNames []string\n")
+
+	for i, r := range refs {
+		props := uniqueProps[i]
+		fmt.Fprintf(w, "\t// Check %s unique required: %v\n", r.goName, props)
+		fmt.Fprintf(w, "\tif ")
+		for j, prop := range props {
+			if j > 0 {
+				fmt.Fprintf(w, " || ")
+			}
+			fmt.Fprintf(w, "func() bool { _, ok := fields[%q]; return ok }()", prop)
+		}
+		fmt.Fprintf(w, " {\n")
+		fmt.Fprintf(w, "\t\tv.%s = new(%s)\n", r.goName, r.goName)
+		fmt.Fprintf(w, "\t\tif err := json.Unmarshal(data, v.%s); err != nil {\n", r.goName)
+		fmt.Fprintf(w, "\t\t\tv.%s = nil\n", r.goName)
+		fmt.Fprintf(w, "\t\t} else {\n")
+		fmt.Fprintf(w, "\t\t\tmatched++\n")
+		fmt.Fprintf(w, "\t\t\tmatchedNames = append(matchedNames, %q)\n", r.goName)
+		fmt.Fprintf(w, "\t\t}\n")
+		fmt.Fprintf(w, "\t}\n")
+	}
+
+	g.emitUnionMatchValidation(w, goName, candidates, isOneOf)
+}
+
+// emitUnionMatchValidation emits the match count validation for oneOf/anyOf.
+func (g *Generator) emitUnionMatchValidation(w *strings.Builder, goName string, candidates []string, isOneOf bool) {
+	if isOneOf {
+		fmt.Fprintf(w, "\tif matched == 0 {\n")
+		fmt.Fprintf(w, "\t\treturn &openapigo.OneOfNoMatchError{Candidates: %s}\n", formatStringSlice(candidates))
+		fmt.Fprintf(w, "\t}\n")
+		fmt.Fprintf(w, "\tif matched > 1 {\n")
+		fmt.Fprintf(w, "\t\treturn &openapigo.OneOfMultipleMatchError{Matched: matchedNames}\n")
+		fmt.Fprintf(w, "\t}\n")
+	} else {
+		fmt.Fprintf(w, "\tif matched == 0 {\n")
+		fmt.Fprintf(w, "\t\treturn &openapigo.AnyOfNoMatchError{Candidates: %s}\n", formatStringSlice(candidates))
+		fmt.Fprintf(w, "\t}\n")
+	}
+	fmt.Fprintf(w, "\treturn nil\n")
+}
+
+// formatStringSlice formats a []string literal for generated code.
+func formatStringSlice(ss []string) string {
+	parts := make([]string, len(ss))
+	for i, s := range ss {
+		parts[i] = fmt.Sprintf("%q", s)
+	}
+	return "[]string{" + strings.Join(parts, ", ") + "}"
 }
 
 // emitOneOfAnyOfUnevaluatedType generates a superset struct for oneOf/anyOf

@@ -729,3 +729,166 @@ func (g *Generator) resolveParentFieldName(parent *spec.Schema, propName string)
 	}
 	return ToFieldName(propName)
 }
+
+// unionStrategy represents how a oneOf/anyOf union can be discriminated at unmarshal time.
+type unionStrategy int
+
+const (
+	unionStrategyNone              unionStrategy = iota // No reliable strategy; fall back to any.
+	unionStrategyRequiredFieldDiff                      // Strategy 2: branches differ by required field sets.
+	unionStrategyUniqueRequired                         // Strategy 3: each branch has a unique required property.
+	unionStrategyJSONType                               // Strategy 4: branches have different JSON types.
+)
+
+// namedRef represents a oneOf/anyOf branch that is a named $ref.
+type namedRef struct {
+	goName string
+	schema *spec.Schema
+}
+
+// allBranchesAreNamedRefs checks whether every branch in a oneOf/anyOf is a
+// named $ref (registered in schemaNames). Returns the list of named refs.
+func (g *Generator) allBranchesAreNamedRefs(branches []*spec.Schema) ([]namedRef, bool) {
+	refs := make([]namedRef, 0, len(branches))
+	for _, b := range branches {
+		resolved := b.Resolved()
+		name, ok := g.schemaNames[resolved]
+		if !ok {
+			return nil, false
+		}
+		refs = append(refs, namedRef{goName: name, schema: resolved})
+	}
+	return refs, true
+}
+
+// selectUnionStrategy determines the best unmarshal discrimination strategy
+// for a multi-branch oneOf/anyOf union at generation time (ADR-003).
+func selectUnionStrategy(s *spec.Schema, refs []namedRef) unionStrategy {
+	// Discriminator gate: if discriminator is present, we can't generate a
+	// wrapper without routing logic (not yet implemented). Stay with any.
+	if s.Discriminator != nil {
+		return unionStrategyNone
+	}
+
+	// Strategy 4: JSON type discrimination (object vs string vs array etc.)
+	if tryJSONTypeStrategy(refs) {
+		return unionStrategyJSONType
+	}
+
+	// Strategy 2: required field set difference.
+	if tryRequiredFieldDiffStrategy(refs) {
+		return unionStrategyRequiredFieldDiff
+	}
+
+	// Strategy 3: unique required property per branch.
+	if tryUniqueRequiredStrategy(refs) {
+		return unionStrategyUniqueRequired
+	}
+
+	return unionStrategyNone
+}
+
+// jsonTypeGroup normalizes a schema type to its JSON wire type group.
+// "integer" and "number" are the same JSON type (RFC 8259 number).
+func jsonTypeGroup(schemaType string) string {
+	if schemaType == "integer" {
+		return "number"
+	}
+	return schemaType
+}
+
+// tryJSONTypeStrategy checks if all branches have different JSON types.
+// "integer" and "number" are treated as the same JSON type since they
+// cannot be distinguished by prefix character (RFC 8259).
+func tryJSONTypeStrategy(refs []namedRef) bool {
+	types := make(map[string]bool, len(refs))
+	for _, r := range refs {
+		t := r.schema.Type
+		if t == "" {
+			return false // ambiguous type
+		}
+		group := jsonTypeGroup(t)
+		if types[group] {
+			return false // duplicate JSON type
+		}
+		types[group] = true
+	}
+	return true
+}
+
+// tryRequiredFieldDiffStrategy checks if branches can be distinguished by
+// their required field sets (each branch has a distinct set).
+func tryRequiredFieldDiffStrategy(refs []namedRef) bool {
+	if len(refs) < 2 {
+		return false
+	}
+	// Each branch must have at least one required field.
+	for _, r := range refs {
+		if len(r.schema.Required) == 0 {
+			return false
+		}
+	}
+	// Check that no two branches have identical required sets.
+	seen := make(map[string]bool, len(refs))
+	for _, r := range refs {
+		sorted := make([]string, len(r.schema.Required))
+		copy(sorted, r.schema.Required)
+		slices.Sort(sorted)
+		key := strings.Join(sorted, "\x00")
+		if seen[key] {
+			return false
+		}
+		seen[key] = true
+	}
+	return true
+}
+
+// tryUniqueRequiredStrategy checks if each branch has at least one required
+// property that no other branch requires.
+func tryUniqueRequiredStrategy(refs []namedRef) bool {
+	if len(refs) < 2 {
+		return false
+	}
+	// Count how many branches require each property.
+	propCount := make(map[string]int)
+	for _, r := range refs {
+		for _, prop := range r.schema.Required {
+			propCount[prop]++
+		}
+	}
+	// Each branch must have at least one unique required property.
+	for _, r := range refs {
+		hasUnique := false
+		for _, prop := range r.schema.Required {
+			if propCount[prop] == 1 {
+				hasUnique = true
+				break
+			}
+		}
+		if !hasUnique {
+			return false
+		}
+	}
+	return true
+}
+
+// uniqueRequiredProps returns, for each branch, the required properties
+// that appear only in that branch's required set.
+func uniqueRequiredProps(refs []namedRef) [][]string {
+	propCount := make(map[string]int)
+	for _, r := range refs {
+		for _, prop := range r.schema.Required {
+			propCount[prop]++
+		}
+	}
+	result := make([][]string, len(refs))
+	for i, r := range refs {
+		for _, prop := range r.schema.Required {
+			if propCount[prop] == 1 {
+				result[i] = append(result[i], prop)
+			}
+		}
+		slices.Sort(result[i])
+	}
+	return result
+}

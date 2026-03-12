@@ -102,6 +102,60 @@
           { "type": "string" },
           { "type": "integer" }
         ]
+      },
+      "TagList": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "TypedUnion": {
+        "oneOf": [
+          { "$ref": "#/components/schemas/CreditCard" },
+          { "$ref": "#/components/schemas/TagList" }
+        ]
+      },
+      "AnyOfUnion": {
+        "anyOf": [
+          { "$ref": "#/components/schemas/CreditCard" },
+          { "$ref": "#/components/schemas/BankTransfer" }
+        ]
+      },
+      "DiscriminatedUnion": {
+        "oneOf": [
+          { "$ref": "#/components/schemas/CreditCard" },
+          { "$ref": "#/components/schemas/BankTransfer" }
+        ],
+        "discriminator": {
+          "propertyName": "type"
+        }
+      },
+      "OptionA": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "value": { "type": "string" }
+        }
+      },
+      "OptionB": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "score": { "type": "integer" }
+        }
+      },
+      "IndistinguishableUnion": {
+        "oneOf": [
+          { "$ref": "#/components/schemas/OptionA" },
+          { "$ref": "#/components/schemas/OptionB" }
+        ]
+      },
+      "FlagValue": {
+        "type": "boolean"
+      },
+      "StringOrBool": {
+        "oneOf": [
+          { "$ref": "#/components/schemas/FlagValue" },
+          { "$ref": "#/components/schemas/TagList" }
+        ]
       }
     }
   }

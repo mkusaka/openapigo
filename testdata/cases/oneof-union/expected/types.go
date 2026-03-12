@@ -5,11 +5,72 @@
 package generated
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	"github.com/mkusaka/openapigo"
 )
 
 // Ensures generated code is compatible with the runtime library.
 var _ = openapigo.RuntimeCompatV0_1
+
+// AnyOfUnion is a anyOf union type.
+type AnyOfUnion struct {
+	CreditCard   *CreditCard   `json:"-"`
+	BankTransfer *BankTransfer `json:"-"`
+}
+
+// MarshalJSON implements json.Marshaler for AnyOfUnion.
+func (v AnyOfUnion) MarshalJSON() ([]byte, error) {
+	var nonNil []any
+	if v.CreditCard != nil {
+		nonNil = append(nonNil, v.CreditCard)
+	}
+	if v.BankTransfer != nil {
+		nonNil = append(nonNil, v.BankTransfer)
+	}
+	if len(nonNil) == 0 {
+		return nil, fmt.Errorf("AnyOfUnion: no variant set; at least one must be non-nil")
+	}
+	if len(nonNil) == 1 {
+		return json.Marshal(nonNil[0])
+	}
+	return openapigo.MarshalMerge(nonNil...)
+}
+
+// UnmarshalJSON implements json.Unmarshaler for AnyOfUnion.
+func (v *AnyOfUnion) UnmarshalJSON(data []byte) error {
+	fields, err := openapigo.ExtractFieldKeys(data)
+	if err != nil {
+		return err
+	}
+	var matched int
+	var matchedNames []string
+	// Check CreditCard required fields: [card_number cvv]
+	if func() bool { _, ok := fields["card_number"]; return ok }() && func() bool { _, ok := fields["cvv"]; return ok }() {
+		v.CreditCard = new(CreditCard)
+		if err := json.Unmarshal(data, v.CreditCard); err != nil {
+			v.CreditCard = nil
+		} else {
+			matched++
+			matchedNames = append(matchedNames, "CreditCard")
+		}
+	}
+	// Check BankTransfer required fields: [account_number routing_number]
+	if func() bool { _, ok := fields["account_number"]; return ok }() && func() bool { _, ok := fields["routing_number"]; return ok }() {
+		v.BankTransfer = new(BankTransfer)
+		if err := json.Unmarshal(data, v.BankTransfer); err != nil {
+			v.BankTransfer = nil
+		} else {
+			matched++
+			matchedNames = append(matchedNames, "BankTransfer")
+		}
+	}
+	if matched == 0 {
+		return &openapigo.AnyOfNoMatchError{Candidates: []string{"CreditCard", "BankTransfer"}}
+	}
+	return nil
+}
 
 // BankTransfer represents the schema.
 type BankTransfer struct {
@@ -25,14 +86,96 @@ type CreditCard struct {
 	ExpYear    *int64 `json:"exp_year,omitzero"`
 }
 
+// DiscriminatedUnion is a union type (oneOf/anyOf).
+type DiscriminatedUnion = any
+
+// FlagValue is a type alias.
+type FlagValue = bool
+
 // FlexValue is a union type (oneOf/anyOf).
 type FlexValue = any
+
+// IndistinguishableUnion is a union type (oneOf/anyOf).
+type IndistinguishableUnion = any
 
 // MixedUnion is a union type (oneOf/anyOf).
 type MixedUnion = any
 
-// MultiUnion is a union type (oneOf/anyOf).
-type MultiUnion = any
+// MultiUnion is a oneOf union type.
+type MultiUnion struct {
+	CreditCard   *CreditCard   `json:"-"`
+	BankTransfer *BankTransfer `json:"-"`
+}
+
+// MarshalJSON implements json.Marshaler for MultiUnion.
+func (v MultiUnion) MarshalJSON() ([]byte, error) {
+	var count int
+	if v.CreditCard != nil {
+		count++
+	}
+	if v.BankTransfer != nil {
+		count++
+	}
+	if count > 1 {
+		return nil, fmt.Errorf("MultiUnion: multiple variants set (%d); exactly one must be non-nil", count)
+	}
+	if v.CreditCard != nil {
+		return json.Marshal(v.CreditCard)
+	}
+	if v.BankTransfer != nil {
+		return json.Marshal(v.BankTransfer)
+	}
+	return nil, fmt.Errorf("MultiUnion: no variant set; exactly one must be non-nil")
+}
+
+// UnmarshalJSON implements json.Unmarshaler for MultiUnion.
+func (v *MultiUnion) UnmarshalJSON(data []byte) error {
+	fields, err := openapigo.ExtractFieldKeys(data)
+	if err != nil {
+		return err
+	}
+	var matched int
+	var matchedNames []string
+	// Check CreditCard required fields: [card_number cvv]
+	if func() bool { _, ok := fields["card_number"]; return ok }() && func() bool { _, ok := fields["cvv"]; return ok }() {
+		v.CreditCard = new(CreditCard)
+		if err := json.Unmarshal(data, v.CreditCard); err != nil {
+			v.CreditCard = nil
+		} else {
+			matched++
+			matchedNames = append(matchedNames, "CreditCard")
+		}
+	}
+	// Check BankTransfer required fields: [account_number routing_number]
+	if func() bool { _, ok := fields["account_number"]; return ok }() && func() bool { _, ok := fields["routing_number"]; return ok }() {
+		v.BankTransfer = new(BankTransfer)
+		if err := json.Unmarshal(data, v.BankTransfer); err != nil {
+			v.BankTransfer = nil
+		} else {
+			matched++
+			matchedNames = append(matchedNames, "BankTransfer")
+		}
+	}
+	if matched == 0 {
+		return &openapigo.OneOfNoMatchError{Candidates: []string{"CreditCard", "BankTransfer"}}
+	}
+	if matched > 1 {
+		return &openapigo.OneOfMultipleMatchError{Matched: matchedNames}
+	}
+	return nil
+}
+
+// OptionA represents the schema.
+type OptionA struct {
+	Name  *string `json:"name,omitzero"`
+	Value *string `json:"value,omitzero"`
+}
+
+// OptionB represents the schema.
+type OptionB struct {
+	Name  *string `json:"name,omitzero"`
+	Score *int64  `json:"score,omitzero"`
+}
 
 // Payment represents the schema.
 type Payment struct {
@@ -53,3 +196,94 @@ type SinglePrimitiveWrapper = string
 
 // SingleRefWrapper is a type alias (single-branch oneOf/anyOf).
 type SingleRefWrapper = CreditCard
+
+// StringOrBool is a oneOf union type.
+type StringOrBool struct {
+	FlagValue *FlagValue `json:"-"`
+	TagList   *TagList   `json:"-"`
+}
+
+// MarshalJSON implements json.Marshaler for StringOrBool.
+func (v StringOrBool) MarshalJSON() ([]byte, error) {
+	var count int
+	if v.FlagValue != nil {
+		count++
+	}
+	if v.TagList != nil {
+		count++
+	}
+	if count > 1 {
+		return nil, fmt.Errorf("StringOrBool: multiple variants set (%d); exactly one must be non-nil", count)
+	}
+	if v.FlagValue != nil {
+		return json.Marshal(v.FlagValue)
+	}
+	if v.TagList != nil {
+		return json.Marshal(v.TagList)
+	}
+	return nil, fmt.Errorf("StringOrBool: no variant set; exactly one must be non-nil")
+}
+
+// UnmarshalJSON implements json.Unmarshaler for StringOrBool.
+func (v *StringOrBool) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimLeft(data, " \t\r\n")
+	if len(trimmed) == 0 {
+		return &openapigo.OneOfNoMatchError{Candidates: []string{"FlagValue", "TagList"}}
+	}
+	switch trimmed[0] {
+	case '[':
+		v.TagList = new(TagList)
+		return json.Unmarshal(data, v.TagList)
+	case 't', 'f':
+		v.FlagValue = new(FlagValue)
+		return json.Unmarshal(data, v.FlagValue)
+	}
+	return &openapigo.OneOfNoMatchError{Candidates: []string{"FlagValue", "TagList"}}
+}
+
+// TagList is a list type.
+type TagList = []string
+
+// TypedUnion is a oneOf union type.
+type TypedUnion struct {
+	CreditCard *CreditCard `json:"-"`
+	TagList    *TagList    `json:"-"`
+}
+
+// MarshalJSON implements json.Marshaler for TypedUnion.
+func (v TypedUnion) MarshalJSON() ([]byte, error) {
+	var count int
+	if v.CreditCard != nil {
+		count++
+	}
+	if v.TagList != nil {
+		count++
+	}
+	if count > 1 {
+		return nil, fmt.Errorf("TypedUnion: multiple variants set (%d); exactly one must be non-nil", count)
+	}
+	if v.CreditCard != nil {
+		return json.Marshal(v.CreditCard)
+	}
+	if v.TagList != nil {
+		return json.Marshal(v.TagList)
+	}
+	return nil, fmt.Errorf("TypedUnion: no variant set; exactly one must be non-nil")
+}
+
+// UnmarshalJSON implements json.Unmarshaler for TypedUnion.
+func (v *TypedUnion) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimLeft(data, " \t\r\n")
+	if len(trimmed) == 0 {
+		return &openapigo.OneOfNoMatchError{Candidates: []string{"CreditCard", "TagList"}}
+	}
+	switch trimmed[0] {
+	case '[':
+		v.TagList = new(TagList)
+		return json.Unmarshal(data, v.TagList)
+	case '{':
+		v.CreditCard = new(CreditCard)
+		return json.Unmarshal(data, v.CreditCard)
+	}
+	return &openapigo.OneOfNoMatchError{Candidates: []string{"CreditCard", "TagList"}}
+}
