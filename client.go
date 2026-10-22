@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 )
 
@@ -621,8 +622,7 @@ func buildMiddlewareChain(httpClient *http.Client, middleware []Middleware) func
 	handler := func(r *http.Request) (*http.Response, error) {
 		return httpClient.Do(r)
 	}
-	for i := len(middleware) - 1; i >= 0; i-- {
-		mw := middleware[i]
+	for _, mw := range slices.Backward(middleware) {
 		next := handler
 		handler = func(r *http.Request) (*http.Response, error) {
 			return mw.RoundTrip(r, next)
